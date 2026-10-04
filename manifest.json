@@ -1,0 +1,9 @@
+{
+  "id": "mym-life",
+  "name": "MYM Life",
+  "version": "1.0.0",
+  "minAppVersion": "1.8.0",
+  "description": "A local-first mobile home, recap, timeline, search, and knowledge graph for a Life OS vault.",
+  "author": "MYM",
+  "isDesktopOnly": false
+}

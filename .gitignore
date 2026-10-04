@@ -1,0 +1,53 @@
+# Dependencies and build caches
+node_modules/
+dist/
+*.log
+_tmp_*
+.DS_Store
+Thumbs.db
+
+# Secrets and local environment
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Never commit vaults, Obsidian state, notes, or sample personal data
+Vault/
+**/Vault/
+.obsidian/
+**/.obsidian/
+Attachments/
+**/Attachments/
+sample-data/
+test-artifacts/
+workspace.json
+workspace-mobile.json
+workspace*.json
+
+# Never commit personal media
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.heic
+*.svg
+*.mp4
+*.mov
+*.m4v
+*.avi
+*.mkv
+*.mp3
+*.m4a
+*.wav
+*.aac
+*.flac
+
+# Markdown is documentation-only in this repository
+*.md
+!README.md
+!CHANGELOG.md
+!SECURITY.md
