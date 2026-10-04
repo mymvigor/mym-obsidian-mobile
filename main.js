@@ -71,6 +71,105 @@ function debounce(fn, wait) {
     timer = window.setTimeout(() => fn(...args), wait);
   };
 }
+var MobileLayoutController = class {
+  constructor(root, plugin) {
+    this.root = root;
+    this.plugin = plugin;
+    this.frame = 0;
+    this.baselineByOrientation = /* @__PURE__ */ new Map();
+    this.syncBound = () => this.schedule();
+  }
+  start() {
+    this.safeTopProbe = document.body.createDiv({ cls: "mym-safe-probe mym-safe-probe-top" });
+    this.safeBottomProbe = document.body.createDiv({ cls: "mym-safe-probe mym-safe-probe-bottom" });
+    window.addEventListener("resize", this.syncBound);
+    window.addEventListener("orientationchange", this.syncBound);
+    window.visualViewport?.addEventListener("resize", this.syncBound);
+    window.visualViewport?.addEventListener("scroll", this.syncBound);
+    this.root.addEventListener("focusin", this.syncBound);
+    this.root.addEventListener("focusout", this.syncBound);
+    this.schedule();
+  }
+  stop() {
+    window.cancelAnimationFrame(this.frame);
+    window.removeEventListener("resize", this.syncBound);
+    window.removeEventListener("orientationchange", this.syncBound);
+    window.visualViewport?.removeEventListener("resize", this.syncBound);
+    window.visualViewport?.removeEventListener("scroll", this.syncBound);
+    this.root.removeEventListener("focusin", this.syncBound);
+    this.root.removeEventListener("focusout", this.syncBound);
+    this.safeTopProbe?.remove();
+    this.safeBottomProbe?.remove();
+  }
+  schedule() {
+    window.cancelAnimationFrame(this.frame);
+    this.frame = window.requestAnimationFrame(() => this.sync());
+  }
+  sync() {
+    const viewport = window.visualViewport;
+    const viewportWidth = Math.round(viewport?.width || window.innerWidth);
+    const viewportHeight = Math.round(viewport?.height || window.innerHeight);
+    const viewportTop = Math.round(viewport?.offsetTop || 0);
+    const viewportBottom = viewportTop + viewportHeight;
+    const orientation = viewportWidth > viewportHeight ? "landscape" : "portrait";
+    const focused = document.activeElement;
+    const editableFocused = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLElement && focused.isContentEditable;
+    const baseline = this.baselineByOrientation.get(orientation) || viewportHeight;
+    if (!this.baselineByOrientation.has(orientation) || !editableFocused && viewportHeight > baseline) this.baselineByOrientation.set(orientation, viewportHeight);
+    const keyboardOpen = editableFocused && baseline - viewportHeight > 80;
+    const hostRect = this.root.parentElement?.getBoundingClientRect();
+    const rootRect = this.root.getBoundingClientRect();
+    const hostTop = hostRect ? Math.max(0, Math.round(hostRect.top - viewportTop)) : 0;
+    const hostBottom = hostRect ? Math.max(0, Math.round(viewportBottom - hostRect.bottom)) : 0;
+    const safeTop = Math.round(this.safeTopProbe?.getBoundingClientRect().height || 0);
+    const safeBottom = Math.round(this.safeBottomProbe?.getBoundingClientRect().height || 0);
+    const rootTop = Math.max(rootRect.top, viewportTop);
+    const availableAtRoot = Math.max(320, Math.round(viewportBottom - rootTop));
+    const shellHeight = hostRect ? Math.max(320, Math.min(availableAtRoot, Math.round(hostRect.bottom - rootTop))) : availableAtRoot;
+    const headerHeight = Math.round(this.root.querySelector(".mym-app-header")?.getBoundingClientRect().height || 0);
+    const nav = this.root.querySelector(".mym-dock");
+    const navHeight = nav && getComputedStyle(nav).display !== "none" ? Math.round(nav.getBoundingClientRect().height) : 0;
+    const effectiveSafeTop = Math.max(0, safeTop - hostTop);
+    const effectiveSafeBottom = Math.max(0, safeBottom - hostBottom);
+    const metrics = { viewportWidth, viewportHeight, viewportTop, shellHeight, hostTop, hostBottom, safeTop, safeBottom, headerHeight, navHeight, keyboardOpen };
+    this.root.style.setProperty("--mym-shell-height", `${shellHeight}px`);
+    this.root.style.setProperty("--mym-viewport-height", `${viewportHeight}px`);
+    this.root.style.setProperty("--mym-viewport-top", `${viewportTop}px`);
+    this.root.style.setProperty("--mym-host-top", `${hostTop}px`);
+    this.root.style.setProperty("--mym-host-bottom", `${hostBottom}px`);
+    this.root.style.setProperty("--mym-safe-top", `${safeTop}px`);
+    this.root.style.setProperty("--mym-safe-bottom", `${safeBottom}px`);
+    this.root.style.setProperty("--mym-effective-safe-top", `${effectiveSafeTop}px`);
+    this.root.style.setProperty("--mym-effective-safe-bottom", `${effectiveSafeBottom}px`);
+    this.root.style.setProperty("--mym-header-height", `${headerHeight}px`);
+    this.root.style.setProperty("--mym-measured-nav-height", `${navHeight}px`);
+    document.body.style.setProperty("--mym-vv-height", `${viewportHeight}px`);
+    document.body.style.setProperty("--mym-vv-top", `${viewportTop}px`);
+    document.body.style.setProperty("--mym-effective-safe-bottom", `${effectiveSafeBottom}px`);
+    this.root.toggleClass("is-keyboard-open", keyboardOpen);
+    this.root.toggleClass("mym-no-custom-dock", this.plugin.hasHostNavConflict(this.root));
+    this.updateDebug(metrics);
+    const editableElement = editableFocused && focused instanceof HTMLElement ? focused : void 0;
+    if (editableElement && keyboardOpen) {
+      window.requestAnimationFrame(() => editableElement.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+    }
+  }
+  updateDebug(metrics) {
+    const enabled = document.body.hasClass("mym-layout-debug-mode");
+    let overlay = this.root.querySelector(".mym-layout-debug");
+    if (!enabled) {
+      overlay?.remove();
+      return;
+    }
+    overlay || (overlay = this.root.createDiv({ cls: "mym-layout-debug", attr: { "aria-live": "polite" } }));
+    overlay.setText([
+      `viewport ${metrics.viewportWidth}\xD7${metrics.viewportHeight} @${metrics.viewportTop}`,
+      `shell ${metrics.shellHeight} \xB7 host ${metrics.hostTop}/${metrics.hostBottom}`,
+      `safe ${metrics.safeTop}/${metrics.safeBottom} \xB7 header ${metrics.headerHeight} \xB7 nav ${metrics.navHeight}`,
+      `keyboard ${metrics.keyboardOpen ? "open" : "closed"}`
+    ].join("\n"));
+  }
+};
 var MymView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -92,47 +191,20 @@ var MymView = class extends import_obsidian.ItemView {
   }
   startMobileLifecycle(render) {
     this.plugin.enterMym(this);
-    let largestHeight = 0;
-    let previousWidth = window.visualViewport?.width || window.innerWidth;
-    const sync = () => {
-      const viewport = window.visualViewport;
-      const available = viewport?.height || window.innerHeight;
-      const width = viewport?.width || window.innerWidth;
-      const hostHeight = this.contentEl.parentElement?.clientHeight || this.contentEl.clientHeight || available;
-      const height = Math.max(320, Math.min(available, hostHeight || available));
-      if (Math.abs(width - previousWidth) > 80) largestHeight = height;
-      else largestHeight = Math.max(largestHeight, height);
-      previousWidth = width;
-      this.contentEl.style.setProperty("--mym-app-height", `${Math.round(height)}px`);
-      this.contentEl.style.setProperty("--mym-host-bottom", `${this.plugin.hostBottomInset(this.contentEl)}px`);
-      document.body.style.setProperty("--mym-vv-height", `${Math.round(height)}px`);
-      document.body.style.setProperty("--mym-vv-top", `${Math.round(viewport?.offsetTop || 0)}px`);
-      this.contentEl.toggleClass("is-keyboard-open", largestHeight - height > 120);
-    };
-    sync();
-    this.registerDomEvent(window, "resize", sync);
-    this.registerDomEvent(window, "orientationchange", sync);
-    if (window.visualViewport) {
-      const viewport = window.visualViewport;
-      viewport.addEventListener("resize", sync);
-      viewport.addEventListener("scroll", sync);
-      this.register(() => {
-        viewport.removeEventListener("resize", sync);
-        viewport.removeEventListener("scroll", sync);
-      });
-    }
-    this.registerDomEvent(this.contentEl, "focusin", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      window.setTimeout(() => target.scrollIntoView({ block: "center", behavior: "smooth" }), 180);
-    });
+    this.layout?.stop();
+    this.layout = new MobileLayoutController(this.contentEl, this.plugin);
+    this.layout.start();
+    this.register(() => this.layout?.stop());
     this.watchVault(render);
   }
-  shell(active) {
+  shell(active, title = this.getDisplayText()) {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page" });
-    const dock = this.contentEl.createDiv({ cls: "mym-dock", attr: { role: "navigation", "aria-label": "\u4E3B\u5BFC\u822A" } });
+    const shell = this.contentEl.createDiv({ cls: "mym-app-shell" });
+    const header = shell.createDiv({ cls: "mym-app-header" });
+    header.createEl("h1", { text: title });
+    const page = shell.createDiv({ cls: "mym-page mym-scroll", attr: { tabindex: "-1" } });
+    const dock = shell.createDiv({ cls: "mym-dock", attr: { role: "navigation", "aria-label": "\u4E3B\u5BFC\u822A" } });
     const items = [
       { icon: "home", label: "\u9996\u9875", type: HOME_VIEW },
       { icon: "clock-3", label: "\u65F6\u95F4", type: TIMELINE_VIEW },
@@ -155,22 +227,26 @@ var MymView = class extends import_obsidian.ItemView {
     });
     return page;
   }
-  detailShell(parentLabel = "\u9996\u9875") {
+  detailShell(title, parentLabel = "\u9996\u9875") {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page mym-detail-page" });
-    const nav = page.createDiv({ cls: "mym-app-nav" });
+    const shell = this.contentEl.createDiv({ cls: "mym-app-shell" });
+    const nav = shell.createDiv({ cls: "mym-app-header mym-app-nav" });
     const back = nav.createEl("button", { cls: "mym-back", attr: { "aria-label": `\u8FD4\u56DE${parentLabel}` } });
     (0, import_obsidian.setIcon)(back.createSpan(), "chevron-left");
-    back.createSpan({ text: parentLabel });
+    back.createSpan({ text: title });
     back.addEventListener("click", () => void this.plugin.back());
+    const page = shell.createDiv({ cls: "mym-page mym-scroll mym-detail-page", attr: { tabindex: "-1" } });
     return page;
   }
   renderFailure(error, retry) {
     console.error(`[MYM Life] ${this.getViewType()} render failed`, error);
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page mym-error-page" });
+    const shell = this.contentEl.createDiv({ cls: "mym-app-shell" });
+    const header = shell.createDiv({ cls: "mym-app-header" });
+    header.createEl("h1", { text: this.getDisplayText() });
+    const page = shell.createDiv({ cls: "mym-page mym-scroll mym-error-page" });
     const card = page.createDiv({ cls: "mym-error", attr: { role: "alert" } });
     const icon = card.createDiv({ cls: "mym-error-icon" });
     (0, import_obsidian.setIcon)(icon, "circle-alert");
@@ -378,11 +454,9 @@ var DetailView = class extends MymView {
     }
   }
   render() {
-    this.contentEl.empty();
-    this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page mym-detail-page" });
     if (!this.goalPath) {
-      const loading = page.createDiv({ cls: "mym-state-card mym-loading", attr: { role: "status", "aria-live": "polite" } });
+      const page2 = this.detailShell("\u4E3B\u7EBF", "\u9996\u9875");
+      const loading = page2.createDiv({ cls: "mym-state-card mym-loading", attr: { role: "status", "aria-live": "polite" } });
       loading.createDiv({ cls: "mym-state-orb" });
       loading.createEl("h1", { text: "\u6B63\u5728\u6253\u5F00\u4E3B\u7EBF" });
       loading.createEl("p", { text: "MYM \u6B63\u5728\u6574\u7406\u8FD9\u4E00\u6BB5\u4EBA\u751F\u3002" });
@@ -390,7 +464,8 @@ var DetailView = class extends MymView {
     }
     const goal = this.plugin.goalForPath(this.goalPath);
     if (!goal) {
-      const missing = page.createDiv({ cls: "mym-state-card" });
+      const page2 = this.detailShell("\u4E3B\u7EBF", "\u9996\u9875");
+      const missing = page2.createDiv({ cls: "mym-state-card" });
       const icon = missing.createDiv({ cls: "mym-state-icon" });
       (0, import_obsidian.setIcon)(icon, "file-question");
       missing.createEl("h1", { text: "\u8FD9\u6761\u4E3B\u7EBF\u6682\u65F6\u627E\u4E0D\u5230" });
@@ -399,15 +474,13 @@ var DetailView = class extends MymView {
       button.addEventListener("click", () => void this.plugin.openRoot(HOME_VIEW));
       return;
     }
+    const page = this.detailShell(goal.title, "\u9996\u9875");
     const isCpa = /cpa|考试|审计|会计/i.test(`${goal.title} ${goal.domain || ""}`);
     const isFitness = /健身|身体|训练|体脂/i.test(`${goal.title} ${goal.domain || ""}`);
     const fm = this.plugin.frontmatter(goal.file);
     const heroFile = this.plugin.heroFor(goal.file) || this.plugin.mediaFor(goal.file).find((item) => item.kind === "image")?.file;
     const hero = page.createDiv({ cls: `mym-line-hero${heroFile ? " has-image" : ""}` });
     if (heroFile) hero.style.setProperty("--mym-line-image", `url("${this.app.vault.getResourcePath(heroFile)}")`);
-    const back = hero.createEl("button", { cls: "mym-hero-back", attr: { "aria-label": "\u8FD4\u56DE\u9996\u9875" } });
-    (0, import_obsidian.setIcon)(back, "chevron-left");
-    back.addEventListener("click", () => void this.plugin.back());
     hero.createEl("h1", { text: goal.title });
     hero.createEl("p", { text: asText(fm.subtitle) || (isFitness ? "\u66F4\u5F3A\u58EE\uFF0C\u66F4\u6709\u80FD\u91CF\u7684\u81EA\u5DF1" : isCpa ? "\u4E00\u6B21\u901A\u8FC7\uFF0C\u7ED9\u672A\u6765\u66F4\u591A\u53EF\u80FD" : goal.recap || "\u6301\u7EED\u6295\u5165\uFF0C\u4FDD\u6301\u6E05\u9192\u3002") });
     const tabs = page.createDiv({ cls: "mym-detail-tabs", attr: { role: "tablist", "aria-label": `${goal.title} \u9875\u9762\u5BFC\u822A` } });
@@ -600,7 +673,6 @@ var TimelineView = class extends MymView {
     const page = this.shell(TIMELINE_VIEW);
     const head = page.createDiv({ cls: "mym-title-row" });
     const words = head.createDiv();
-    words.createEl("h1", { text: "\u65F6\u95F4" });
     words.createEl("p", { text: "\u4EBA\u751F\u7ECF\u5386\u3001\u601D\u60F3\u4E0E\u91CC\u7A0B\u7891\uFF0C\u7559\u5728\u4E00\u6761\u7EBF\u4E0A\u3002" });
     const add = head.createEl("button", { cls: "mym-icon-button", attr: { "aria-label": "\u5FEB\u901F\u8BB0\u5F55" } });
     (0, import_obsidian.setIcon)(add, "plus");
@@ -684,7 +756,6 @@ var SearchView = class extends MymView {
   }
   render() {
     const page = this.shell(SEARCH_VIEW);
-    page.createEl("h1", { text: "\u641C\u7D22" });
     page.createEl("p", { text: "\u641C\u7D22\u76EE\u6807\u3001\u77E5\u8BC6\u4E0E\u4EBA\u751F\u8BB0\u5F55\u3002" });
     const searchBox = page.createDiv({ cls: "mym-search-box" });
     (0, import_obsidian.setIcon)(searchBox.createSpan(), "search");
@@ -747,10 +818,9 @@ var GoalsView = class extends MymView {
     }
   }
   render() {
-    const page = this.detailShell("\u9996\u9875");
+    const page = this.detailShell("\u6211\u7684\u76EE\u6807", "\u9996\u9875");
     const title = page.createDiv({ cls: "mym-title-row" });
     const copy = title.createDiv();
-    copy.createEl("h1", { text: "\u6211\u7684\u76EE\u6807" });
     copy.createEl("p", { text: "\u6240\u6709\u76EE\u6807\uFF0C\u7EDF\u4E00\u7BA1\u7406\u3002\u9996\u9875\u53EA\u4FDD\u7559\u5F53\u524D\u91CD\u70B9\u3002" });
     const tabs = page.createDiv({ cls: "mym-filter-chips mym-goal-tabs" });
     const options = [["focus", "\u8FDB\u884C\u4E2D"], ["done", "\u5DF2\u5B8C\u6210"], ["paused", "\u5DF2\u6682\u505C"]];
@@ -828,7 +898,7 @@ var ProfileView = class extends MymView {
     this.menu(menu, "chart-no-axes-column-increasing", "\u6570\u636E\u7EDF\u8BA1", `${this.plugin.goals().length} \u4E2A\u76EE\u6807 \xB7 ${this.plugin.dailyFiles().length} \u6761\u8BB0\u5F55`, () => new import_obsidian.Notice("\u7EDF\u8BA1\u4EC5\u5728\u672C\u673A\u5B8C\u6210"));
     this.menu(menu, "palette", "\u4E3B\u9898\u8BBE\u7F6E", "MYM \u6D45\u8272\u4E3B\u9898", () => new import_obsidian.Notice("\u5F53\u524D\u4F7F\u7528 MYM \u6D45\u8272\u4E3B\u9898"));
     this.menu(menu, "archive-restore", "\u5907\u4EFD\u4E0E\u6062\u590D", "\u6240\u6709\u5185\u5BB9\u90FD\u4FDD\u5B58\u5728\u672C\u5730", () => new import_obsidian.Notice("\u8BF7\u7EE7\u7EED\u4F7F\u7528\u4F60\u7684\u540C\u6B65\u6216\u5907\u4EFD\u65B9\u6848"));
-    this.menu(menu, "info", "\u5173\u4E8E MYM Life", "\u7248\u672C 1.2.1 \xB7 \u5B8C\u5168\u79BB\u7EBF", () => new import_obsidian.Notice("MYM Life 1.2.1"));
+    this.menu(menu, "info", "\u5173\u4E8E MYM Life", "\u7248\u672C 1.2.2 \xB7 \u5B8C\u5168\u79BB\u7EBF", () => new import_obsidian.Notice("MYM Life 1.2.2"));
   }
   menu(parent, iconName, title, subtitle, action) {
     const row = parent.createEl("button", { cls: "mym-settings-row" });
@@ -902,8 +972,8 @@ var GraphView = class extends MymView {
   render() {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root", "mym-graph-root");
-    const wrap = this.contentEl.createDiv({ cls: "mym-graph-wrap" });
-    const top = wrap.createDiv({ cls: "mym-graph-top" });
+    const wrap = this.contentEl.createDiv({ cls: "mym-app-shell mym-graph-wrap" });
+    const top = wrap.createDiv({ cls: "mym-app-header mym-graph-top" });
     const back = top.createEl("button", { cls: "mym-graph-back", attr: { "aria-label": "\u8FD4\u56DE\u4E0A\u4E00\u9875" } });
     (0, import_obsidian.setIcon)(back, "chevron-left");
     back.addEventListener("click", () => void this.plugin.back());
@@ -912,7 +982,8 @@ var GraphView = class extends MymView {
     const search = controls.createEl("button", { attr: { "aria-label": "\u641C\u7D22\u77E5\u8BC6" } });
     (0, import_obsidian.setIcon)(search, "search");
     search.addEventListener("click", () => void this.plugin.push(SEARCH_VIEW, {}, "\u77E5\u8BC6\u7A7A\u95F4"));
-    const filters = wrap.createDiv({ cls: "mym-graph-filters" });
+    const stage = wrap.createDiv({ cls: "mym-graph-stage mym-scroll" });
+    const filters = stage.createDiv({ cls: "mym-graph-filters" });
     ["\u5168\u90E8", "\u5065\u8EAB", "CPA", "\u82F1\u8BED", "\u751F\u6D3B"].forEach((domain) => {
       const chip = filters.createEl("button", { cls: this.domainFilter === domain ? "is-active" : "", text: domain });
       chip.addEventListener("click", () => {
@@ -924,9 +995,9 @@ var GraphView = class extends MymView {
         this.updatePreview?.();
       });
     });
-    this.canvas = wrap.createEl("canvas", { cls: "mym-graph-canvas", attr: { "aria-label": "\u53EF\u7F29\u653E\u77E5\u8BC6\u56FE\u8C31" } });
+    this.canvas = stage.createEl("canvas", { cls: "mym-graph-canvas", attr: { "aria-label": "\u53EF\u7F29\u653E\u77E5\u8BC6\u56FE\u8C31" } });
     this.ctx = this.canvas.getContext("2d") || void 0;
-    const preview = wrap.createDiv({ cls: "mym-graph-preview" });
+    const preview = stage.createDiv({ cls: "mym-graph-preview" });
     const label = preview.createDiv({ cls: "mym-graph-preview-label", text: "\u5F53\u524D\u8282\u70B9" });
     const title = preview.createEl("h2");
     const summary = preview.createEl("p");
@@ -1245,6 +1316,15 @@ var CaptureModal = class extends import_obsidian.Modal {
     this.pendingFiles = [];
   }
   onOpen() {
+    this.viewportSync = () => {
+      const viewport = window.visualViewport;
+      document.body.style.setProperty("--mym-vv-height", `${Math.round(viewport?.height || window.innerHeight)}px`);
+      document.body.style.setProperty("--mym-vv-top", `${Math.round(viewport?.offsetTop || 0)}px`);
+    };
+    this.viewportSync();
+    window.addEventListener("resize", this.viewportSync);
+    window.visualViewport?.addEventListener("resize", this.viewportSync);
+    window.visualViewport?.addEventListener("scroll", this.viewportSync);
     this.modalEl.addClass("mym-capture-modal");
     this.titleEl.setText("\u65B0\u5EFA\u8BB0\u5F55");
     const categories = this.contentEl.createDiv({ cls: "mym-capture-categories" });
@@ -1355,6 +1435,12 @@ date: ${localDate()}
     window.setTimeout(() => input.focus(), 80);
   }
   onClose() {
+    if (this.viewportSync) {
+      window.removeEventListener("resize", this.viewportSync);
+      window.visualViewport?.removeEventListener("resize", this.viewportSync);
+      window.visualViewport?.removeEventListener("scroll", this.viewportSync);
+    }
+    this.viewportSync = void 0;
     this.contentEl.empty();
   }
 };
@@ -1363,6 +1449,7 @@ var MymLifePlugin = class extends import_obsidian.Plugin {
     super(...arguments);
     this.navStack = [];
     this.contentCache = /* @__PURE__ */ new Map();
+    this.hostChromeStyles = /* @__PURE__ */ new Map();
   }
   async onload() {
     this.registerView(HOME_VIEW, (leaf) => new HomeView(leaf, this));
@@ -1376,6 +1463,15 @@ var MymLifePlugin = class extends import_obsidian.Plugin {
     this.addCommand({ id: "open-life-home", name: "\u6253\u5F00\u4EBA\u751F\u9996\u9875", callback: () => void this.openRoot(HOME_VIEW) });
     this.addCommand({ id: "quick-capture", name: "\u5FEB\u901F\u8BB0\u5F55\u5230\u4ECA\u5929", callback: () => new CaptureModal(this.app).open() });
     this.addCommand({ id: "open-life-graph", name: "\u6253\u5F00\u5C40\u90E8\u77E5\u8BC6\u56FE\u8C31", callback: () => void this.openRoot(GRAPH_VIEW) });
+    this.addCommand({
+      id: "toggle-mobile-layout-debug",
+      name: "\u5207\u6362\u79FB\u52A8\u5E03\u5C40\u8C03\u8BD5",
+      callback: () => {
+        document.body.toggleClass("mym-layout-debug-mode", !document.body.hasClass("mym-layout-debug-mode"));
+        window.dispatchEvent(new Event("resize"));
+        new import_obsidian.Notice(document.body.hasClass("mym-layout-debug-mode") ? "MYM \u5E03\u5C40\u8C03\u8BD5\u5DF2\u5F00\u542F" : "MYM \u5E03\u5C40\u8C03\u8BD5\u5DF2\u5173\u95ED");
+      }
+    });
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof import_obsidian.TFile) this.contentCache.delete(file.path);
     }));
@@ -1405,23 +1501,50 @@ var MymLifePlugin = class extends import_obsidian.Plugin {
   setHostChrome(active) {
     document.body.toggleClass("mym-life-active", active);
     document.body.toggleClass("mym-life-mobile", active && import_obsidian.Platform.isMobile);
+    if (active) this.hideHostChromeForActiveLeaf();
+    else this.restoreHostChrome();
   }
-  hostBottomInset(root) {
-    const viewport = window.visualViewport;
-    const visibleBottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
-    const selectors = [".mobile-toolbar", ".mobile-navbar", ".workspace-drawer-vault-switcher", ".workspace-tab-header-container"];
-    let overlap = 0;
-    selectors.forEach((selector) => {
+  hideHostChromeForActiveLeaf() {
+    this.restoreHostChrome();
+    const leaf = this.app.workspace.getMostRecentLeaf();
+    const viewHeader = leaf?.view.containerEl.querySelector(".view-header");
+    if (viewHeader) this.hideHostElement(viewHeader);
+    if (!import_obsidian.Platform.isMobile && !document.body.hasClass("is-mobile")) return;
+    [".mobile-toolbar", ".mobile-navbar", ".workspace-drawer-vault-switcher"].forEach((selector) => {
       document.querySelectorAll(selector).forEach((element) => {
-        if (element.closest(".mym-root") || getComputedStyle(element).display === "none") return;
-        const rect = element.getBoundingClientRect();
-        if (rect.height <= 0 || rect.top < visibleBottom * 0.55 || rect.top >= visibleBottom) return;
-        overlap = Math.max(overlap, Math.max(0, visibleBottom - rect.top));
+        if (!element.closest(".mym-root") && this.isBottomHostChrome(element)) this.hideHostElement(element);
       });
     });
-    const host = root.parentElement?.getBoundingClientRect();
-    if (host && host.bottom < visibleBottom) overlap = Math.max(overlap, visibleBottom - host.bottom);
-    return Math.round(overlap);
+  }
+  hideHostElement(element) {
+    if (!this.hostChromeStyles.has(element)) this.hostChromeStyles.set(element, element.getAttribute("style"));
+    element.dataset.mymHostHidden = "true";
+    element.style.setProperty("display", "none", "important");
+  }
+  restoreHostChrome() {
+    this.hostChromeStyles.forEach((style, element) => {
+      if (style === null) element.removeAttribute("style");
+      else element.setAttribute("style", style);
+      delete element.dataset.mymHostHidden;
+    });
+    this.hostChromeStyles.clear();
+  }
+  isBottomHostChrome(element) {
+    const viewport = window.visualViewport;
+    const visibleBottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden" && rect.height > 0 && rect.top >= visibleBottom * 0.55 && rect.top < visibleBottom;
+  }
+  hasHostNavConflict(root) {
+    if (!import_obsidian.Platform.isMobile && !document.body.hasClass("is-mobile")) return false;
+    const selectors = [".mobile-toolbar", ".mobile-navbar", ".workspace-drawer-vault-switcher"];
+    const visibleHostBar = selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some((element) => !element.closest(".mym-root") && this.isBottomHostChrome(element)));
+    if (visibleHostBar) return true;
+    const viewport = window.visualViewport;
+    const visibleBottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
+    const hostBottom = root.parentElement?.getBoundingClientRect().bottom || visibleBottom;
+    return visibleBottom - hostBottom > 12;
   }
   async hydrate(files) {
     await Promise.all(files.map(async (file) => {
@@ -1653,9 +1776,11 @@ progress: 0
     };
   }
   onunload() {
-    document.body.removeClass("mym-life-active", "mym-life-mobile");
+    this.restoreHostChrome();
+    document.body.removeClass("mym-life-active", "mym-life-mobile", "mym-layout-debug-mode");
     document.body.style.removeProperty("--mym-vv-height");
     document.body.style.removeProperty("--mym-vv-top");
+    document.body.style.removeProperty("--mym-effective-safe-bottom");
     MYM_VIEWS.forEach((type) => this.app.workspace.detachLeavesOfType(type));
   }
 };

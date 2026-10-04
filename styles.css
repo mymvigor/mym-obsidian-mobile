@@ -564,10 +564,6 @@
 }
 
 /* MYM Life 1.2.1 — light mobile specification */
-body.mym-life-active .workspace-leaf.mod-active:has(.mym-root) .view-header { display:none!important; }
-body.mym-life-mobile.mym-life-active .mobile-toolbar,
-body.mym-life-mobile.mym-life-active .mobile-navbar,
-body.mym-life-mobile.mym-life-active .workspace-drawer-vault-switcher { display:none!important; }
 
 .mym-root:not(.mym-graph-root) {
   --mym-bg:#f7f7f3;
@@ -851,4 +847,210 @@ body.mym-life-mobile.mym-life-active .workspace-drawer-vault-switcher { display:
 
 @media (prefers-reduced-motion:reduce) {
   .mym-root *,.mym-capture-modal { scroll-behavior:auto!important; animation:none!important; transition:none!important; }
+}
+
+/* MYM Life 1.2.2 — Mobile layout stabilization */
+.mym-safe-probe { position:fixed; z-index:-9999; width:0; pointer-events:none; visibility:hidden; }
+.mym-safe-probe-top { height:env(safe-area-inset-top); }
+.mym-safe-probe-bottom { height:env(safe-area-inset-bottom); }
+
+.mym-root {
+  width:100%!important;
+  height:var(--mym-shell-height,100dvh)!important;
+  min-height:0!important;
+  overflow:hidden!important;
+  contain:layout paint;
+}
+.mym-root .mym-app-shell {
+  position:relative;
+  width:100%;
+  height:100%;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+  display:grid;
+  grid-template-rows:auto minmax(0,1fr) auto;
+  background:inherit;
+}
+.mym-root .mym-app-header {
+  position:relative!important;
+  z-index:30;
+  grid-row:1;
+  top:auto!important;
+  left:auto!important;
+  right:auto!important;
+  min-width:0;
+  min-height:calc(52px + var(--mym-effective-safe-top,0px));
+  margin:0!important;
+  padding:var(--mym-effective-safe-top,0px) max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left))!important;
+  border-bottom:1px solid rgba(226,230,225,.9);
+  background:rgba(247,247,243,.96)!important;
+  color:#171a18;
+  display:flex!important;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  box-shadow:none!important;
+  backdrop-filter:blur(18px) saturate(1.08);
+  pointer-events:auto!important;
+}
+.mym-root .mym-app-header > h1 {
+  min-width:0;
+  margin:0!important;
+  overflow:hidden;
+  color:#171a18!important;
+  font-size:20px!important;
+  font-weight:780;
+  line-height:1.15;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.mym-root .mym-app-header.mym-app-nav { justify-content:flex-start; }
+.mym-root .mym-app-header .mym-back {
+  width:auto!important;
+  min-width:44px;
+  min-height:44px!important;
+  padding:0 12px 0 2px!important;
+  border:0!important;
+  border-radius:12px!important;
+  background:transparent!important;
+  color:#245f3e!important;
+  display:inline-flex;
+  align-items:center;
+  gap:1px;
+  font-size:17px;
+  font-weight:710;
+  box-shadow:none!important;
+}
+.mym-root .mym-app-header .mym-back svg { width:24px; height:24px; }
+
+.mym-root .mym-scroll,
+.mym-root .mym-page.mym-scroll {
+  grid-row:2;
+  width:100%!important;
+  height:auto!important;
+  min-width:0;
+  min-height:0;
+  max-height:none!important;
+  overflow-x:hidden!important;
+  overflow-y:auto!important;
+  overscroll-behavior-y:contain;
+  -webkit-overflow-scrolling:touch;
+  padding-top:0!important;
+  padding-bottom:calc(var(--mym-effective-safe-bottom,0px) + 20px)!important;
+  scroll-padding-top:16px;
+  scroll-padding-bottom:calc(var(--mym-effective-safe-bottom,0px) + 84px);
+}
+.mym-root .mym-dock {
+  position:relative!important;
+  z-index:32;
+  grid-row:3;
+  left:auto!important;
+  right:auto!important;
+  bottom:auto!important;
+  width:100%!important;
+  max-width:none!important;
+  min-height:68px;
+  margin:0!important;
+  padding:5px max(8px,env(safe-area-inset-right)) calc(var(--mym-effective-safe-bottom,0px) + 10px) max(8px,env(safe-area-inset-left))!important;
+  border:0!important;
+  border-top:1px solid rgba(226,230,225,.92)!important;
+  border-radius:0!important;
+  background:rgba(250,250,247,.97)!important;
+  box-shadow:0 -7px 22px rgba(35,52,42,.055)!important;
+  transform:none!important;
+  backdrop-filter:blur(20px) saturate(1.08);
+}
+.mym-root.mym-no-custom-dock .mym-dock,
+.mym-root.is-keyboard-open .mym-dock { display:none!important; }
+.mym-root.is-keyboard-open .mym-scroll { padding-bottom:calc(var(--mym-effective-safe-bottom,0px) + 16px)!important; }
+.mym-root.is-keyboard-open .mym-floating-add { display:none!important; }
+.mym-root .mym-floating-add {
+  position:absolute!important;
+  z-index:35;
+  right:max(18px,env(safe-area-inset-right))!important;
+  bottom:calc(var(--mym-measured-nav-height,68px) + var(--mym-effective-safe-bottom,0px) + 14px)!important;
+}
+.mym-root.mym-no-custom-dock .mym-floating-add { bottom:calc(var(--mym-effective-safe-bottom,0px) + 18px)!important; }
+.mym-root:has(.mym-floating-add) .mym-scroll {
+  padding-bottom:calc(var(--mym-effective-safe-bottom,0px) + 96px)!important;
+  scroll-padding-bottom:calc(var(--mym-effective-safe-bottom,0px) + 96px)!important;
+}
+.mym-root.is-keyboard-open:has(.mym-floating-add) .mym-scroll { padding-bottom:calc(var(--mym-effective-safe-bottom,0px) + 16px)!important; }
+
+.mym-root .mym-home-hero { padding-top:20px!important; }
+.mym-root .mym-home-hero:not(.has-image) { min-height:236px!important; }
+.mym-root .mym-line-hero { padding-top:22px!important; }
+.mym-root .mym-line-hero:not(.has-image) { min-height:156px!important; }
+.mym-root .mym-profile-hero { padding-top:54px!important; }
+.mym-root .mym-profile-hero:not(.has-image) { min-height:220px!important; }
+.mym-root .mym-title-row { padding-top:16px!important; }
+.mym-root .mym-title-row:has(p:only-child) { min-height:52px; }
+
+.mym-root img,.mym-root video,.mym-root canvas,.mym-root audio { max-width:100%; }
+.mym-root img,.mym-root video { height:auto; }
+.mym-root .mym-media-tile img,.mym-root .mym-media-tile video,
+.mym-root .mym-compare-frame img,.mym-root .mym-time-media video { width:100%; max-height:min(44dvh,360px); object-fit:cover; }
+
+.mym-graph-root .mym-app-shell { grid-template-rows:auto minmax(0,1fr); }
+.mym-graph-root .mym-app-header {
+  min-height:calc(58px + var(--mym-effective-safe-top,0px));
+  border-color:rgba(149,219,178,.1);
+  background:rgba(8,18,15,.96)!important;
+  color:#eef8f2;
+}
+.mym-graph-root .mym-graph-stage {
+  position:relative;
+  padding:0!important;
+  overflow:hidden!important;
+  background:#08120f;
+}
+.mym-graph-root .mym-graph-filters { top:8px!important; }
+.mym-graph-root .mym-graph-canvas { width:100%; height:100%; }
+.mym-graph-root .mym-graph-preview { bottom:calc(var(--mym-effective-safe-bottom,0px) + 14px); }
+
+.mym-layout-debug {
+  position:absolute;
+  z-index:999;
+  top:calc(var(--mym-header-height,0px) + 6px);
+  right:6px;
+  max-width:calc(100% - 12px);
+  padding:7px 9px;
+  border:1px solid #ffb000;
+  border-radius:8px;
+  background:rgba(20,20,18,.9);
+  color:#fff5cf;
+  font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;
+  white-space:pre;
+  pointer-events:none;
+}
+body.mym-layout-debug-mode .mym-root .mym-app-header { outline:2px solid #4da3ff; outline-offset:-2px; }
+body.mym-layout-debug-mode .mym-root .mym-scroll { outline:2px solid #ffb000; outline-offset:-2px; }
+body.mym-layout-debug-mode .mym-root .mym-dock { outline:2px solid #ff4d8d; outline-offset:-2px; }
+
+.mym-capture-modal {
+  max-height:calc(var(--mym-vv-height,var(--mym-viewport-height,100dvh)) - env(safe-area-inset-top) - 10px)!important;
+  padding-bottom:var(--mym-effective-safe-bottom,env(safe-area-inset-bottom))!important;
+}
+.modal-container:has(.mym-capture-modal) {
+  top:var(--mym-vv-top,0px)!important;
+  bottom:auto!important;
+  height:var(--mym-vv-height,100dvh)!important;
+  min-height:0!important;
+  max-height:var(--mym-vv-height,100dvh)!important;
+  padding:0!important;
+  overflow:hidden!important;
+  align-items:flex-end!important;
+  justify-content:flex-end!important;
+}
+.modal-container:has(.mym-capture-modal) .mym-capture-modal {
+  margin:0 auto!important;
+  transform:none!important;
+}
+
+@media (orientation:landscape) and (max-height:520px) {
+  .mym-root .mym-app-header { min-height:48px; }
+  .mym-root .mym-dock { min-height:58px; }
+  .mym-root .mym-home-hero { min-height:150px!important; }
+  .mym-root .mym-line-hero { min-height:142px!important; }
 }

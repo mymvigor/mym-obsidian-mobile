@@ -10,7 +10,7 @@ const read = (name) => fs.readFileSync(path.join(root, name), "utf8");
 test("release versions and required assets match", () => {
   const manifest = JSON.parse(read("manifest.json"));
   const pkg = JSON.parse(read("package.json"));
-  assert.equal(manifest.version, "1.2.1");
+  assert.equal(manifest.version, "1.2.2");
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.isDesktopOnly, false);
   for (const file of ["main.js", "manifest.json", "styles.css"]) assert.ok(fs.statSync(path.join(root, file)).size > 0, `${file} missing`);
@@ -44,9 +44,24 @@ test("mobile layout guards are present", () => {
   assert.match(css, /100dvh/);
   assert.match(css, /is-keyboard-open/);
   assert.match(source, /visualViewport/);
-  assert.match(source, /hostBottomInset/);
+  assert.match(source, /class MobileLayoutController/);
+  assert.match(source, /--mym-shell-height/);
+  assert.doesNotMatch(source, /largestHeight/);
+  assert.match(css, /grid-template-rows:auto minmax\(0,1fr\) auto/);
+  assert.match(css, /\.mym-root \.mym-scroll/);
+  assert.match(source, /hasHostNavConflict/);
   assert.match(source, /mym-life-active/);
   assert.match(source, /scrollIntoView/);
+});
+
+test("1.2.2 exposes deterministic mobile QA dimensions and debug metrics", () => {
+  const css = read("styles.css");
+  const source = read("src/main.ts");
+  for (const metric of ["viewportWidth", "viewportHeight", "hostTop", "hostBottom", "safeTop", "safeBottom", "headerHeight", "navHeight"])
+    assert.ok(source.includes(metric), `missing layout metric ${metric}`);
+  assert.match(source, /toggle-mobile-layout-debug/);
+  assert.match(css, /mym-layout-debug/);
+  assert.match(css, /Mobile layout stabilization/);
 });
 
 test("mobile app navigation and detail view stay inside MYM", () => {
@@ -73,7 +88,7 @@ test("knowledge graph is local, bounded, image-aware, and refocusable", () => {
   assert.match(source, /this\.centerPath = this\.nodes\[index\]\.file\.path/);
 });
 
-test("1.2.1 follows the supplied page construction with the requested light default", () => {
+test("visual baseline keeps the supplied page construction and light default", () => {
   const css = read("styles.css");
   const source = read("src/main.ts");
   for (const token of ["#f7f7f3", "#fff", "#171a18", "#727972", "#347a52", "#e7f0e8", "#e2e6e1"]) assert.ok(css.toLowerCase().includes(token));

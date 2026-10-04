@@ -116,9 +116,128 @@ function debounce<TArgs extends unknown[]>(fn: (...args: TArgs) => void, wait: n
   };
 }
 
+interface MobileLayoutMetrics {
+  viewportWidth: number;
+  viewportHeight: number;
+  viewportTop: number;
+  shellHeight: number;
+  hostTop: number;
+  hostBottom: number;
+  safeTop: number;
+  safeBottom: number;
+  headerHeight: number;
+  navHeight: number;
+  keyboardOpen: boolean;
+}
+
+class MobileLayoutController {
+  private frame = 0;
+  private safeTopProbe?: HTMLElement;
+  private safeBottomProbe?: HTMLElement;
+  private baselineByOrientation = new Map<string, number>();
+  private readonly syncBound = (): void => this.schedule();
+
+  constructor(private readonly root: HTMLElement, private readonly plugin: MymLifePlugin) {}
+
+  start(): void {
+    this.safeTopProbe = document.body.createDiv({ cls: "mym-safe-probe mym-safe-probe-top" });
+    this.safeBottomProbe = document.body.createDiv({ cls: "mym-safe-probe mym-safe-probe-bottom" });
+    window.addEventListener("resize", this.syncBound);
+    window.addEventListener("orientationchange", this.syncBound);
+    window.visualViewport?.addEventListener("resize", this.syncBound);
+    window.visualViewport?.addEventListener("scroll", this.syncBound);
+    this.root.addEventListener("focusin", this.syncBound);
+    this.root.addEventListener("focusout", this.syncBound);
+    this.schedule();
+  }
+
+  stop(): void {
+    window.cancelAnimationFrame(this.frame);
+    window.removeEventListener("resize", this.syncBound);
+    window.removeEventListener("orientationchange", this.syncBound);
+    window.visualViewport?.removeEventListener("resize", this.syncBound);
+    window.visualViewport?.removeEventListener("scroll", this.syncBound);
+    this.root.removeEventListener("focusin", this.syncBound);
+    this.root.removeEventListener("focusout", this.syncBound);
+    this.safeTopProbe?.remove();
+    this.safeBottomProbe?.remove();
+  }
+
+  schedule(): void {
+    window.cancelAnimationFrame(this.frame);
+    this.frame = window.requestAnimationFrame(() => this.sync());
+  }
+
+  private sync(): void {
+    const viewport = window.visualViewport;
+    const viewportWidth = Math.round(viewport?.width || window.innerWidth);
+    const viewportHeight = Math.round(viewport?.height || window.innerHeight);
+    const viewportTop = Math.round(viewport?.offsetTop || 0);
+    const viewportBottom = viewportTop + viewportHeight;
+    const orientation = viewportWidth > viewportHeight ? "landscape" : "portrait";
+    const focused = document.activeElement;
+    const editableFocused = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable);
+    const baseline = this.baselineByOrientation.get(orientation) || viewportHeight;
+    if (!this.baselineByOrientation.has(orientation) || (!editableFocused && viewportHeight > baseline)) this.baselineByOrientation.set(orientation, viewportHeight);
+    const keyboardOpen = editableFocused && baseline - viewportHeight > 80;
+
+    const hostRect = this.root.parentElement?.getBoundingClientRect();
+    const rootRect = this.root.getBoundingClientRect();
+    const hostTop = hostRect ? Math.max(0, Math.round(hostRect.top - viewportTop)) : 0;
+    const hostBottom = hostRect ? Math.max(0, Math.round(viewportBottom - hostRect.bottom)) : 0;
+    const safeTop = Math.round(this.safeTopProbe?.getBoundingClientRect().height || 0);
+    const safeBottom = Math.round(this.safeBottomProbe?.getBoundingClientRect().height || 0);
+    const rootTop = Math.max(rootRect.top, viewportTop);
+    const availableAtRoot = Math.max(320, Math.round(viewportBottom - rootTop));
+    const shellHeight = hostRect ? Math.max(320, Math.min(availableAtRoot, Math.round(hostRect.bottom - rootTop))) : availableAtRoot;
+    const headerHeight = Math.round(this.root.querySelector<HTMLElement>(".mym-app-header")?.getBoundingClientRect().height || 0);
+    const nav = this.root.querySelector<HTMLElement>(".mym-dock");
+    const navHeight = nav && getComputedStyle(nav).display !== "none" ? Math.round(nav.getBoundingClientRect().height) : 0;
+    const effectiveSafeTop = Math.max(0, safeTop - hostTop);
+    const effectiveSafeBottom = Math.max(0, safeBottom - hostBottom);
+    const metrics: MobileLayoutMetrics = { viewportWidth, viewportHeight, viewportTop, shellHeight, hostTop, hostBottom, safeTop, safeBottom, headerHeight, navHeight, keyboardOpen };
+
+    this.root.style.setProperty("--mym-shell-height", `${shellHeight}px`);
+    this.root.style.setProperty("--mym-viewport-height", `${viewportHeight}px`);
+    this.root.style.setProperty("--mym-viewport-top", `${viewportTop}px`);
+    this.root.style.setProperty("--mym-host-top", `${hostTop}px`);
+    this.root.style.setProperty("--mym-host-bottom", `${hostBottom}px`);
+    this.root.style.setProperty("--mym-safe-top", `${safeTop}px`);
+    this.root.style.setProperty("--mym-safe-bottom", `${safeBottom}px`);
+    this.root.style.setProperty("--mym-effective-safe-top", `${effectiveSafeTop}px`);
+    this.root.style.setProperty("--mym-effective-safe-bottom", `${effectiveSafeBottom}px`);
+    this.root.style.setProperty("--mym-header-height", `${headerHeight}px`);
+    this.root.style.setProperty("--mym-measured-nav-height", `${navHeight}px`);
+    document.body.style.setProperty("--mym-vv-height", `${viewportHeight}px`);
+    document.body.style.setProperty("--mym-vv-top", `${viewportTop}px`);
+    document.body.style.setProperty("--mym-effective-safe-bottom", `${effectiveSafeBottom}px`);
+    this.root.toggleClass("is-keyboard-open", keyboardOpen);
+    this.root.toggleClass("mym-no-custom-dock", this.plugin.hasHostNavConflict(this.root));
+    this.updateDebug(metrics);
+    const editableElement = editableFocused && focused instanceof HTMLElement ? focused : undefined;
+    if (editableElement && keyboardOpen) {
+      window.requestAnimationFrame(() => editableElement.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+    }
+  }
+
+  private updateDebug(metrics: MobileLayoutMetrics): void {
+    const enabled = document.body.hasClass("mym-layout-debug-mode");
+    let overlay = this.root.querySelector<HTMLElement>(".mym-layout-debug");
+    if (!enabled) { overlay?.remove(); return; }
+    overlay ||= this.root.createDiv({ cls: "mym-layout-debug", attr: { "aria-live": "polite" } });
+    overlay.setText([
+      `viewport ${metrics.viewportWidth}×${metrics.viewportHeight} @${metrics.viewportTop}`,
+      `shell ${metrics.shellHeight} · host ${metrics.hostTop}/${metrics.hostBottom}`,
+      `safe ${metrics.safeTop}/${metrics.safeBottom} · header ${metrics.headerHeight} · nav ${metrics.navHeight}`,
+      `keyboard ${metrics.keyboardOpen ? "open" : "closed"}`
+    ].join("\n"));
+  }
+}
+
 abstract class MymView extends ItemView {
   plugin: MymLifePlugin;
   private cleanups: Array<() => void> = [];
+  private layout?: MobileLayoutController;
 
   constructor(leaf: WorkspaceLeaf, plugin: MymLifePlugin) {
     super(leaf);
@@ -142,48 +261,21 @@ abstract class MymView extends ItemView {
 
   protected startMobileLifecycle(render: () => void): void {
     this.plugin.enterMym(this);
-    let largestHeight = 0;
-    let previousWidth = window.visualViewport?.width || window.innerWidth;
-    const sync = (): void => {
-      const viewport = window.visualViewport;
-      const available = viewport?.height || window.innerHeight;
-      const width = viewport?.width || window.innerWidth;
-      const hostHeight = this.contentEl.parentElement?.clientHeight || this.contentEl.clientHeight || available;
-      const height = Math.max(320, Math.min(available, hostHeight || available));
-      if (Math.abs(width - previousWidth) > 80) largestHeight = height;
-      else largestHeight = Math.max(largestHeight, height);
-      previousWidth = width;
-      this.contentEl.style.setProperty("--mym-app-height", `${Math.round(height)}px`);
-      this.contentEl.style.setProperty("--mym-host-bottom", `${this.plugin.hostBottomInset(this.contentEl)}px`);
-      document.body.style.setProperty("--mym-vv-height", `${Math.round(height)}px`);
-      document.body.style.setProperty("--mym-vv-top", `${Math.round(viewport?.offsetTop || 0)}px`);
-      this.contentEl.toggleClass("is-keyboard-open", largestHeight - height > 120);
-    };
-    sync();
-    this.registerDomEvent(window, "resize", sync);
-    this.registerDomEvent(window, "orientationchange", sync);
-    if (window.visualViewport) {
-      const viewport = window.visualViewport;
-      viewport.addEventListener("resize", sync);
-      viewport.addEventListener("scroll", sync);
-      this.register(() => {
-        viewport.removeEventListener("resize", sync);
-        viewport.removeEventListener("scroll", sync);
-      });
-    }
-    this.registerDomEvent(this.contentEl, "focusin", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      window.setTimeout(() => target.scrollIntoView({ block: "center", behavior: "smooth" }), 180);
-    });
+    this.layout?.stop();
+    this.layout = new MobileLayoutController(this.contentEl, this.plugin);
+    this.layout.start();
+    this.register(() => this.layout?.stop());
     this.watchVault(render);
   }
 
-  protected shell(active: string): HTMLElement {
+  protected shell(active: string, title = this.getDisplayText()): HTMLElement {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page" });
-    const dock = this.contentEl.createDiv({ cls: "mym-dock", attr: { role: "navigation", "aria-label": "主导航" } });
+    const shell = this.contentEl.createDiv({ cls: "mym-app-shell" });
+    const header = shell.createDiv({ cls: "mym-app-header" });
+    header.createEl("h1", { text: title });
+    const page = shell.createDiv({ cls: "mym-page mym-scroll", attr: { tabindex: "-1" } });
+    const dock = shell.createDiv({ cls: "mym-dock", attr: { role: "navigation", "aria-label": "主导航" } });
     const items: Array<{ icon: string; label: string; type?: string; capture?: boolean }> = [
       { icon: "home", label: "首页", type: HOME_VIEW },
       { icon: "clock-3", label: "时间", type: TIMELINE_VIEW },
@@ -207,15 +299,16 @@ abstract class MymView extends ItemView {
     return page;
   }
 
-  protected detailShell(parentLabel = "首页"): HTMLElement {
+  protected detailShell(title: string, parentLabel = "首页"): HTMLElement {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page mym-detail-page" });
-    const nav = page.createDiv({ cls: "mym-app-nav" });
+    const shell = this.contentEl.createDiv({ cls: "mym-app-shell" });
+    const nav = shell.createDiv({ cls: "mym-app-header mym-app-nav" });
     const back = nav.createEl("button", { cls: "mym-back", attr: { "aria-label": `返回${parentLabel}` } });
     setIcon(back.createSpan(), "chevron-left");
-    back.createSpan({ text: parentLabel });
+    back.createSpan({ text: title });
     back.addEventListener("click", () => void this.plugin.back());
+    const page = shell.createDiv({ cls: "mym-page mym-scroll mym-detail-page", attr: { tabindex: "-1" } });
     return page;
   }
 
@@ -223,7 +316,10 @@ abstract class MymView extends ItemView {
     console.error(`[MYM Life] ${this.getViewType()} render failed`, error);
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page mym-error-page" });
+    const shell = this.contentEl.createDiv({ cls: "mym-app-shell" });
+    const header = shell.createDiv({ cls: "mym-app-header" });
+    header.createEl("h1", { text: this.getDisplayText() });
+    const page = shell.createDiv({ cls: "mym-page mym-scroll mym-error-page" });
     const card = page.createDiv({ cls: "mym-error", attr: { role: "alert" } });
     const icon = card.createDiv({ cls: "mym-error-icon" });
     setIcon(icon, "circle-alert");
@@ -422,10 +518,8 @@ class DetailView extends MymView {
   }
 
   private render(): void {
-    this.contentEl.empty();
-    this.contentEl.addClass("mym-root");
-    const page = this.contentEl.createDiv({ cls: "mym-page mym-detail-page" });
     if (!this.goalPath) {
+      const page = this.detailShell("主线", "首页");
       const loading = page.createDiv({ cls: "mym-state-card mym-loading", attr: { role: "status", "aria-live": "polite" } });
       loading.createDiv({ cls: "mym-state-orb" });
       loading.createEl("h1", { text: "正在打开主线" });
@@ -434,6 +528,7 @@ class DetailView extends MymView {
     }
     const goal = this.plugin.goalForPath(this.goalPath);
     if (!goal) {
+      const page = this.detailShell("主线", "首页");
       const missing = page.createDiv({ cls: "mym-state-card" });
       const icon = missing.createDiv({ cls: "mym-state-icon" });
       setIcon(icon, "file-question");
@@ -444,15 +539,14 @@ class DetailView extends MymView {
       return;
     }
 
+    const page = this.detailShell(goal.title, "首页");
+
     const isCpa = /cpa|考试|审计|会计/i.test(`${goal.title} ${goal.domain || ""}`);
     const isFitness = /健身|身体|训练|体脂/i.test(`${goal.title} ${goal.domain || ""}`);
     const fm = this.plugin.frontmatter(goal.file);
     const heroFile = this.plugin.heroFor(goal.file) || this.plugin.mediaFor(goal.file).find((item) => item.kind === "image")?.file;
     const hero = page.createDiv({ cls: `mym-line-hero${heroFile ? " has-image" : ""}` });
     if (heroFile) hero.style.setProperty("--mym-line-image", `url("${this.app.vault.getResourcePath(heroFile)}")`);
-    const back = hero.createEl("button", { cls: "mym-hero-back", attr: { "aria-label": "返回首页" } });
-    setIcon(back, "chevron-left");
-    back.addEventListener("click", () => void this.plugin.back());
     hero.createEl("h1", { text: goal.title });
     hero.createEl("p", { text: asText(fm.subtitle) || (isFitness ? "更强壮，更有能量的自己" : isCpa ? "一次通过，给未来更多可能" : goal.recap || "持续投入，保持清醒。") });
 
@@ -647,7 +741,6 @@ class TimelineView extends MymView {
     const page = this.shell(TIMELINE_VIEW);
     const head = page.createDiv({ cls: "mym-title-row" });
     const words = head.createDiv();
-    words.createEl("h1", { text: "时间" });
     words.createEl("p", { text: "人生经历、思想与里程碑，留在一条线上。" });
     const add = head.createEl("button", { cls: "mym-icon-button", attr: { "aria-label": "快速记录" } });
     setIcon(add, "plus");
@@ -715,7 +808,6 @@ class SearchView extends MymView {
 
   private render(): void {
     const page = this.shell(SEARCH_VIEW);
-    page.createEl("h1", { text: "搜索" });
     page.createEl("p", { text: "搜索目标、知识与人生记录。" });
     const searchBox = page.createDiv({ cls: "mym-search-box" });
     setIcon(searchBox.createSpan(), "search");
@@ -774,10 +866,9 @@ class GoalsView extends MymView {
   }
 
   private render(): void {
-    const page = this.detailShell("首页");
+    const page = this.detailShell("我的目标", "首页");
     const title = page.createDiv({ cls: "mym-title-row" });
     const copy = title.createDiv();
-    copy.createEl("h1", { text: "我的目标" });
     copy.createEl("p", { text: "所有目标，统一管理。首页只保留当前重点。" });
     const tabs = page.createDiv({ cls: "mym-filter-chips mym-goal-tabs" });
     const options: Array<[GoalStatus | "all", string]> = [["focus","进行中"],["done","已完成"],["paused","已暂停"]];
@@ -844,7 +935,7 @@ class ProfileView extends MymView {
     this.menu(menu, "chart-no-axes-column-increasing", "数据统计", `${this.plugin.goals().length} 个目标 · ${this.plugin.dailyFiles().length} 条记录`, () => new Notice("统计仅在本机完成"));
     this.menu(menu, "palette", "主题设置", "MYM 浅色主题", () => new Notice("当前使用 MYM 浅色主题"));
     this.menu(menu, "archive-restore", "备份与恢复", "所有内容都保存在本地", () => new Notice("请继续使用你的同步或备份方案"));
-    this.menu(menu, "info", "关于 MYM Life", "版本 1.2.1 · 完全离线", () => new Notice("MYM Life 1.2.1"));
+    this.menu(menu, "info", "关于 MYM Life", "版本 1.2.2 · 完全离线", () => new Notice("MYM Life 1.2.2"));
   }
 
   private menu(parent: HTMLElement, iconName: string, title: string, subtitle: string, action: () => void): void {
@@ -913,8 +1004,8 @@ class GraphView extends MymView {
   private render(): void {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root", "mym-graph-root");
-    const wrap = this.contentEl.createDiv({ cls: "mym-graph-wrap" });
-    const top = wrap.createDiv({ cls: "mym-graph-top" });
+    const wrap = this.contentEl.createDiv({ cls: "mym-app-shell mym-graph-wrap" });
+    const top = wrap.createDiv({ cls: "mym-app-header mym-graph-top" });
     const back = top.createEl("button", { cls: "mym-graph-back", attr: { "aria-label": "返回上一页" } });
     setIcon(back, "chevron-left");
     back.addEventListener("click", () => void this.plugin.back());
@@ -923,7 +1014,8 @@ class GraphView extends MymView {
     const search = controls.createEl("button", { attr: { "aria-label": "搜索知识" } });
     setIcon(search, "search");
     search.addEventListener("click", () => void this.plugin.push(SEARCH_VIEW, {}, "知识空间"));
-    const filters = wrap.createDiv({ cls: "mym-graph-filters" });
+    const stage = wrap.createDiv({ cls: "mym-graph-stage mym-scroll" });
+    const filters = stage.createDiv({ cls: "mym-graph-filters" });
     ["全部", "健身", "CPA", "英语", "生活"].forEach((domain) => {
       const chip = filters.createEl("button", { cls: this.domainFilter === domain ? "is-active" : "", text: domain });
       chip.addEventListener("click", () => {
@@ -934,9 +1026,9 @@ class GraphView extends MymView {
         this.build(); this.updatePreview?.();
       });
     });
-    this.canvas = wrap.createEl("canvas", { cls: "mym-graph-canvas", attr: { "aria-label": "可缩放知识图谱" } });
+    this.canvas = stage.createEl("canvas", { cls: "mym-graph-canvas", attr: { "aria-label": "可缩放知识图谱" } });
     this.ctx = this.canvas.getContext("2d") || undefined;
-    const preview = wrap.createDiv({ cls: "mym-graph-preview" });
+    const preview = stage.createDiv({ cls: "mym-graph-preview" });
     const label = preview.createDiv({ cls: "mym-graph-preview-label", text: "当前节点" });
     const title = preview.createEl("h2");
     const summary = preview.createEl("p");
@@ -1210,8 +1302,18 @@ class CaptureModal extends Modal {
   private moods = new Set<string>();
   private category = "日记";
   private pendingFiles: File[] = [];
+  private viewportSync?: () => void;
 
   onOpen(): void {
+    this.viewportSync = (): void => {
+      const viewport = window.visualViewport;
+      document.body.style.setProperty("--mym-vv-height", `${Math.round(viewport?.height || window.innerHeight)}px`);
+      document.body.style.setProperty("--mym-vv-top", `${Math.round(viewport?.offsetTop || 0)}px`);
+    };
+    this.viewportSync();
+    window.addEventListener("resize", this.viewportSync);
+    window.visualViewport?.addEventListener("resize", this.viewportSync);
+    window.visualViewport?.addEventListener("scroll", this.viewportSync);
     this.modalEl.addClass("mym-capture-modal");
     this.titleEl.setText("新建记录");
     const categories = this.contentEl.createDiv({ cls: "mym-capture-categories" });
@@ -1295,12 +1397,21 @@ class CaptureModal extends Modal {
     window.setTimeout(() => input.focus(), 80);
   }
 
-  onClose(): void { this.contentEl.empty(); }
+  onClose(): void {
+    if (this.viewportSync) {
+      window.removeEventListener("resize", this.viewportSync);
+      window.visualViewport?.removeEventListener("resize", this.viewportSync);
+      window.visualViewport?.removeEventListener("scroll", this.viewportSync);
+    }
+    this.viewportSync = undefined;
+    this.contentEl.empty();
+  }
 }
 
 export default class MymLifePlugin extends Plugin {
   private navStack: NavEntry[] = [];
   private contentCache = new Map<string, string>();
+  private hostChromeStyles = new Map<HTMLElement, string | null>();
 
   async onload(): Promise<void> {
     this.registerView(HOME_VIEW, (leaf) => new HomeView(leaf, this));
@@ -1314,6 +1425,15 @@ export default class MymLifePlugin extends Plugin {
     this.addCommand({ id: "open-life-home", name: "打开人生首页", callback: () => void this.openRoot(HOME_VIEW) });
     this.addCommand({ id: "quick-capture", name: "快速记录到今天", callback: () => new CaptureModal(this.app).open() });
     this.addCommand({ id: "open-life-graph", name: "打开局部知识图谱", callback: () => void this.openRoot(GRAPH_VIEW) });
+    this.addCommand({
+      id: "toggle-mobile-layout-debug",
+      name: "切换移动布局调试",
+      callback: () => {
+        document.body.toggleClass("mym-layout-debug-mode", !document.body.hasClass("mym-layout-debug-mode"));
+        window.dispatchEvent(new Event("resize"));
+        new Notice(document.body.hasClass("mym-layout-debug-mode") ? "MYM 布局调试已开启" : "MYM 布局调试已关闭");
+      }
+    });
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof TFile) this.contentCache.delete(file.path);
     }));
@@ -1347,24 +1467,55 @@ export default class MymLifePlugin extends Plugin {
   private setHostChrome(active: boolean): void {
     document.body.toggleClass("mym-life-active", active);
     document.body.toggleClass("mym-life-mobile", active && Platform.isMobile);
+    if (active) this.hideHostChromeForActiveLeaf();
+    else this.restoreHostChrome();
   }
 
-  hostBottomInset(root: HTMLElement): number {
-    const viewport = window.visualViewport;
-    const visibleBottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
-    const selectors = [".mobile-toolbar", ".mobile-navbar", ".workspace-drawer-vault-switcher", ".workspace-tab-header-container"];
-    let overlap = 0;
-    selectors.forEach((selector) => {
+  private hideHostChromeForActiveLeaf(): void {
+    this.restoreHostChrome();
+    const leaf = this.app.workspace.getMostRecentLeaf();
+    const viewHeader = leaf?.view.containerEl.querySelector<HTMLElement>(".view-header");
+    if (viewHeader) this.hideHostElement(viewHeader);
+    if (!Platform.isMobile && !document.body.hasClass("is-mobile")) return;
+    [".mobile-toolbar", ".mobile-navbar", ".workspace-drawer-vault-switcher"].forEach((selector) => {
       document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
-        if (element.closest(".mym-root") || getComputedStyle(element).display === "none") return;
-        const rect = element.getBoundingClientRect();
-        if (rect.height <= 0 || rect.top < visibleBottom * 0.55 || rect.top >= visibleBottom) return;
-        overlap = Math.max(overlap, Math.max(0, visibleBottom - rect.top));
+        if (!element.closest(".mym-root") && this.isBottomHostChrome(element)) this.hideHostElement(element);
       });
     });
-    const host = root.parentElement?.getBoundingClientRect();
-    if (host && host.bottom < visibleBottom) overlap = Math.max(overlap, visibleBottom - host.bottom);
-    return Math.round(overlap);
+  }
+
+  private hideHostElement(element: HTMLElement): void {
+    if (!this.hostChromeStyles.has(element)) this.hostChromeStyles.set(element, element.getAttribute("style"));
+    element.dataset.mymHostHidden = "true";
+    element.style.setProperty("display", "none", "important");
+  }
+
+  private restoreHostChrome(): void {
+    this.hostChromeStyles.forEach((style, element) => {
+      if (style === null) element.removeAttribute("style");
+      else element.setAttribute("style", style);
+      delete element.dataset.mymHostHidden;
+    });
+    this.hostChromeStyles.clear();
+  }
+
+  private isBottomHostChrome(element: HTMLElement): boolean {
+    const viewport = window.visualViewport;
+    const visibleBottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden" && rect.height > 0 && rect.top >= visibleBottom * 0.55 && rect.top < visibleBottom;
+  }
+
+  hasHostNavConflict(root: HTMLElement): boolean {
+    if (!Platform.isMobile && !document.body.hasClass("is-mobile")) return false;
+    const selectors = [".mobile-toolbar", ".mobile-navbar", ".workspace-drawer-vault-switcher"];
+    const visibleHostBar = selectors.some((selector) => Array.from(document.querySelectorAll<HTMLElement>(selector)).some((element) => !element.closest(".mym-root") && this.isBottomHostChrome(element)));
+    if (visibleHostBar) return true;
+    const viewport = window.visualViewport;
+    const visibleBottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
+    const hostBottom = root.parentElement?.getBoundingClientRect().bottom || visibleBottom;
+    return visibleBottom - hostBottom > 12;
   }
 
   async hydrate(files: TFile[]): Promise<void> {
@@ -1607,9 +1758,11 @@ export default class MymLifePlugin extends Plugin {
   }
 
   onunload(): void {
-    document.body.removeClass("mym-life-active", "mym-life-mobile");
+    this.restoreHostChrome();
+    document.body.removeClass("mym-life-active", "mym-life-mobile", "mym-layout-debug-mode");
     document.body.style.removeProperty("--mym-vv-height");
     document.body.style.removeProperty("--mym-vv-top");
+    document.body.style.removeProperty("--mym-effective-safe-bottom");
     MYM_VIEWS.forEach((type) => this.app.workspace.detachLeavesOfType(type));
   }
 }

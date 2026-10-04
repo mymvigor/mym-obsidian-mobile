@@ -2,7 +2,7 @@
 
 MYM Life 是一个本地优先、iPhone 优先的 Obsidian 人生首页插件。它使用 Vault 中已有的 Markdown、YAML Properties、本地附件和双向链接，提供：
 
-- 1.2.1 浅色移动人生首页、当前重点与最近人生
+- 1.2.2 Mobile layout stabilization：统一 App Shell、动态安全区、键盘与宿主栏冲突处理
 - 首页 → 主线详情 → 知识空间的轻量 App 导航栈
 - 健身 / CPA 专属详情结构，以及通用主线详情
 - 主线进度、Recap、本地照片/视频/音频、最近记录与知识入口

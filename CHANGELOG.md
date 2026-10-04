@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.2
+
+Mobile layout stabilization.
+
+- 统一所有 MYM 页面为 Header / Scroll Container / Bottom Navigation 的单滚动层 App Shell。
+- 使用 `visualViewport`、宿主容器边界与 safe-area 探针显式计算可用高度，不再以历史最大高度猜测键盘。
+- 键盘展开时隐藏 MYM 底栏与悬浮按钮，并让焦点输入区保持在可视区域。
+- 对 Obsidian Mobile 宿主栏采用进入时局部隐藏、离开时恢复；检测到冲突时自动停用 MYM Dock，保证只出现一层底栏。
+- 修复二级页固定轻量返回栏、媒体边界、无图 Hero 高度和知识图谱可用区域。
+- 新增可关闭的移动布局调试覆盖层，展示 viewport / host / safe-area / header / nav / keyboard 指标。
+
 ## 1.2.1
 
 - Rebuilt Home, Fitness, CPA, Timeline, Goals, Capture, and Profile against the supplied phone layout with a light MYM-owned visual system.
