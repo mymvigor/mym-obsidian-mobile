@@ -2,12 +2,14 @@
 
 MYM Life 是一个本地优先、iPhone 优先的 Obsidian 人生首页插件。它使用 Vault 中已有的 Markdown、YAML Properties、本地附件和双向链接，提供：
 
-- 移动端人生首页与当前重点
+- Mobile UI 2.0 人生首页与当前重点
+- 首页 → 主线详情 → 知识空间的轻量 App 导航
+- 主线进度、Recap、照片/视频、最近记录与知识入口
 - 基于真实状态变化的 Recap
 - Daily Note 时间流与快速记录
 - 标题、标签和属性搜索
-- 两层局部知识图谱
-- iPhone safe area、键盘和 Home Indicator 适配
+- 可拖动、缩放、渐进加载的两层局部知识图谱
+- iPhone safe area、Dynamic Island、键盘、横屏和 Home Indicator 适配
 
 插件不创建封闭数据库，不发送网络请求，不依赖 Node.js、Electron、CDN、外部 API 或 VPN。卸载插件后，Markdown 和本地附件仍可正常读取。
 

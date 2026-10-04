@@ -11,9 +11,18 @@ import {
 } from "obsidian";
 
 const HOME_VIEW = "mym-life-home";
+const DETAIL_VIEW = "mym-life-detail";
 const TIMELINE_VIEW = "mym-life-timeline";
 const GRAPH_VIEW = "mym-life-graph";
 const SEARCH_VIEW = "mym-life-search";
+
+const MYM_VIEWS = [HOME_VIEW, DETAIL_VIEW, TIMELINE_VIEW, GRAPH_VIEW, SEARCH_VIEW] as const;
+
+interface NavEntry {
+  type: string;
+  state: Record<string, unknown>;
+  label: string;
+}
 
 type Frontmatter = Record<string, unknown>;
 type GoalStatus = "focus" | "active" | "paused" | "done";
@@ -98,6 +107,41 @@ abstract class MymView extends ItemView {
     this.registerEvent(this.app.vault.on("rename", () => refresh()));
   }
 
+  protected startMobileLifecycle(render: () => void): void {
+    let largestHeight = 0;
+    let previousWidth = window.visualViewport?.width || window.innerWidth;
+    const sync = (): void => {
+      const viewport = window.visualViewport;
+      const available = viewport?.height || window.innerHeight;
+      const width = viewport?.width || window.innerWidth;
+      const hostHeight = this.contentEl.parentElement?.clientHeight || this.contentEl.clientHeight || available;
+      const height = Math.max(320, Math.min(available, hostHeight || available));
+      if (Math.abs(width - previousWidth) > 80) largestHeight = height;
+      else largestHeight = Math.max(largestHeight, height);
+      previousWidth = width;
+      this.contentEl.style.setProperty("--mym-app-height", `${Math.round(height)}px`);
+      this.contentEl.toggleClass("is-keyboard-open", largestHeight - height > 120);
+    };
+    sync();
+    this.registerDomEvent(window, "resize", sync);
+    this.registerDomEvent(window, "orientationchange", sync);
+    if (window.visualViewport) {
+      const viewport = window.visualViewport;
+      viewport.addEventListener("resize", sync);
+      viewport.addEventListener("scroll", sync);
+      this.register(() => {
+        viewport.removeEventListener("resize", sync);
+        viewport.removeEventListener("scroll", sync);
+      });
+    }
+    this.registerDomEvent(this.contentEl, "focusin", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      window.setTimeout(() => target.scrollIntoView({ block: "center", behavior: "smooth" }), 180);
+    });
+    this.watchVault(render);
+  }
+
   protected shell(active: string): HTMLElement {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
@@ -111,8 +155,20 @@ abstract class MymView extends ItemView {
       const button = dock.createEl("button", { cls: type === active ? "is-active" : "" });
       setIcon(button.createSpan(), icon);
       button.createSpan({ text: label });
-      button.addEventListener("click", () => void this.plugin.activate(type));
+      button.addEventListener("click", () => void this.plugin.openRoot(type));
     });
+    return page;
+  }
+
+  protected detailShell(parentLabel = "首页"): HTMLElement {
+    this.contentEl.empty();
+    this.contentEl.addClass("mym-root");
+    const page = this.contentEl.createDiv({ cls: "mym-page mym-detail-page" });
+    const nav = page.createDiv({ cls: "mym-app-nav" });
+    const back = nav.createEl("button", { cls: "mym-back", attr: { "aria-label": `返回${parentLabel}` } });
+    setIcon(back.createSpan(), "chevron-left");
+    back.createSpan({ text: parentLabel });
+    back.addEventListener("click", () => void this.plugin.back());
     return page;
   }
 
@@ -144,7 +200,7 @@ class HomeView extends MymView {
 
   onOpen(): Promise<void> {
     this.renderSafely();
-    this.watchVault(() => this.renderSafely());
+    this.startMobileLifecycle(() => this.renderSafely());
     return Promise.resolve();
   }
 
@@ -165,7 +221,7 @@ class HomeView extends MymView {
     const quick = page.createDiv({ cls: "mym-quick" });
     this.quickButton(quick, "plus", "记录", () => new CaptureModal(this.app).open());
     this.quickButton(quick, "calendar-check", "今天", () => void this.plugin.openToday());
-    this.quickButton(quick, "orbit", "图谱", () => void this.plugin.activate(GRAPH_VIEW));
+    this.quickButton(quick, "orbit", "图谱", () => void this.plugin.push(GRAPH_VIEW, {}, "首页"));
 
     const goals = this.plugin.goals();
     this.sectionHeading(page, "当前重点", "只放真正投入的事");
@@ -185,7 +241,7 @@ class HomeView extends MymView {
       card.createSpan({ cls: "mym-recap-domain", text: goal.domain || goal.title });
       card.createEl("strong", { text: goal.metric || (goal.progress === undefined ? "状态更新" : `${goal.progress}%`) });
       card.createSpan({ text: goal.recap || "进度已更新" });
-      card.addEventListener("click", () => this.openNote(goal.file));
+      card.addEventListener("click", () => void this.plugin.openGoal(goal));
     });
     if (recaps.length === 0) recapGrid.createDiv({ cls: "mym-muted", text: "在目标属性中填写 metric 或 recap 后显示。" });
 
@@ -199,7 +255,7 @@ class HomeView extends MymView {
         const row = compact.createEl("button", { cls: "mym-goal-compact" });
         row.createSpan({ text: goal.title });
         row.createSpan({ cls: "mym-muted", text: goal.metric || (goal.progress === undefined ? "查看" : `${goal.progress}%`) });
-        row.addEventListener("click", () => this.openNote(goal.file));
+        row.addEventListener("click", () => void this.plugin.openGoal(goal));
       });
     });
 
@@ -253,7 +309,147 @@ class HomeView extends MymView {
       const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 86400000);
       card.createSpan({ cls: "mym-goal-due", text: days >= 0 ? `还有 ${days} 天` : `已过 ${Math.abs(days)} 天` });
     }
-    card.addEventListener("click", () => this.openNote(goal.file));
+    card.addEventListener("click", () => void this.plugin.openGoal(goal));
+  }
+}
+
+class DetailView extends MymView {
+  private goalPath = "";
+
+  getViewType(): string { return DETAIL_VIEW; }
+  getDisplayText(): string { return "主线详情"; }
+  getIcon(): string { return "leaf"; }
+
+  getState(): Record<string, unknown> { return { goalPath: this.goalPath }; }
+
+  async setState(state: Record<string, unknown>, result: unknown): Promise<void> {
+    await super.setState(state, result as never);
+    this.goalPath = asText(state.goalPath);
+    if (this.contentEl.isConnected) this.renderSafely();
+  }
+
+  onOpen(): Promise<void> {
+    this.renderSafely();
+    this.startMobileLifecycle(() => this.renderSafely());
+    return Promise.resolve();
+  }
+
+  private renderSafely(): void {
+    try { this.render(); }
+    catch (error) { this.renderFailure(error, () => this.renderSafely()); }
+  }
+
+  private render(): void {
+    const page = this.detailShell("首页");
+    if (!this.goalPath) {
+      const loading = page.createDiv({ cls: "mym-state-card mym-loading", attr: { role: "status", "aria-live": "polite" } });
+      loading.createDiv({ cls: "mym-state-orb" });
+      loading.createEl("h1", { text: "正在打开主线" });
+      loading.createEl("p", { text: "MYM 正在整理这一段人生。" });
+      return;
+    }
+    const goal = this.plugin.goalForPath(this.goalPath);
+    if (!goal) {
+      const missing = page.createDiv({ cls: "mym-state-card" });
+      const icon = missing.createDiv({ cls: "mym-state-icon" });
+      setIcon(icon, "file-question");
+      missing.createEl("h1", { text: "这条主线暂时找不到" });
+      missing.createEl("p", { text: "笔记可能刚刚移动或重命名。返回首页后，MYM 会根据最新索引重新整理。" });
+      const button = missing.createEl("button", { cls: "mym-primary-button", text: "返回首页" });
+      button.addEventListener("click", () => void this.plugin.openRoot(HOME_VIEW));
+      return;
+    }
+
+    const statusText: Record<GoalStatus, string> = { focus: "当前重点", active: "进行中", paused: "暂时放下", done: "已经完成" };
+    const hero = page.createDiv({ cls: "mym-line-hero" });
+    const meta = hero.createDiv({ cls: "mym-line-meta" });
+    meta.createSpan({ text: goal.domain || "人生主线" });
+    meta.createSpan({ text: statusText[goal.status] });
+    hero.createEl("h1", { text: goal.title });
+    hero.createEl("p", { text: goal.recap || "这一段还没有写下阶段回顾。" });
+
+    const overview = page.createDiv({ cls: "mym-overview-card" });
+    const progress = overview.createDiv({ cls: "mym-progress-ring", attr: { style: `--mym-progress:${goal.progress ?? 0}` } });
+    const progressText = progress.createDiv();
+    progressText.createEl("strong", { text: goal.progress === undefined ? "—" : `${goal.progress}%` });
+    progressText.createSpan({ text: "当前进度" });
+    const overviewText = overview.createDiv({ cls: "mym-overview-copy" });
+    overviewText.createSpan({ cls: "mym-kicker", text: "现在最重要的反馈" });
+    overviewText.createEl("h2", { text: goal.metric || "保持节奏" });
+    if (goal.due) {
+      const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 86400000);
+      overviewText.createEl("p", { text: days >= 0 ? `距离节点还有 ${days} 天` : `这个节点已过去 ${Math.abs(days)} 天` });
+    } else overviewText.createEl("p", { text: "不追赶别人的时间，只看自己的变化。" });
+
+    const stats = page.createDiv({ cls: "mym-stat-grid" });
+    this.stat(stats, "趋势", goal.progress === undefined ? "持续中" : `${goal.progress}%`, "来自目标属性");
+    const recent = this.plugin.dailyFiles().slice(0, 7);
+    this.stat(stats, "最近人生", `${recent.length} 条`, "近期开启的记录");
+    const knowledge = this.plugin.relatedKnowledge(goal.file);
+    this.stat(stats, "知识连接", `${knowledge.length} 个`, "一到两层局部关系");
+
+    this.heading(page, "阶段回顾", "Recap");
+    const recap = page.createDiv({ cls: "mym-feature-card" });
+    recap.createDiv({ cls: "mym-feature-mark", text: "“" });
+    recap.createEl("p", { text: goal.recap || "这里还没有阶段回顾。等发生真实变化时，再写下一句。" });
+    recap.createSpan({ text: goal.metric || "等待下一次真实反馈" });
+
+    const media = this.plugin.mediaFor(goal.file);
+    this.heading(page, "变化影像", media.length ? `${media.length} 项` : "照片 / 视频");
+    if (media.length) {
+      const strip = page.createDiv({ cls: "mym-media-strip" });
+      media.slice(0, 5).forEach(({ file, kind }) => {
+        const frame = strip.createDiv({ cls: "mym-media-frame" });
+        const source = this.app.vault.getResourcePath(file);
+        if (kind === "video") frame.createEl("video", { attr: { src: source, controls: "", preload: "metadata", playsinline: "" } });
+        else frame.createEl("img", { attr: { src: source, alt: file.basename, decoding: "async" } });
+        frame.createSpan({ text: file.basename });
+      });
+    } else {
+      const empty = page.createDiv({ cls: "mym-empty mym-empty-soft" });
+      empty.createSpan({ text: "还没有照片或视频。把本地媒体嵌入主线笔记后，它会自然出现在这里。" });
+    }
+
+    this.heading(page, "最近记录", "生活留下的痕迹");
+    const stream = page.createDiv({ cls: "mym-detail-stream" });
+    if (!recent.length) stream.createDiv({ cls: "mym-empty mym-empty-soft", text: "这里还没有内容。记录第一段生活后再回来看看。" });
+    recent.slice(0, 4).forEach((file) => {
+      const row = stream.createEl("button", { cls: "mym-detail-entry" });
+      row.createSpan({ cls: "mym-entry-date", text: dateLabel(file.stat.mtime) });
+      const copy = row.createDiv();
+      copy.createEl("strong", { text: file.basename });
+      copy.createSpan({ text: this.plugin.summary(file) });
+      setIcon(row.createSpan({ cls: "mym-entry-arrow" }), "chevron-right");
+      row.addEventListener("click", () => this.openNote(file));
+    });
+
+    this.heading(page, "相关知识", knowledge.length ? `${knowledge.length} 个连接` : "局部图谱");
+    const knowledgeCard = page.createEl("button", { cls: "mym-knowledge-entry" });
+    const knowledgeIcon = knowledgeCard.createDiv({ cls: "mym-knowledge-icon" });
+    setIcon(knowledgeIcon, "orbit");
+    const knowledgeCopy = knowledgeCard.createDiv();
+    knowledgeCopy.createEl("strong", { text: knowledge.length ? "进入沉浸知识图谱" : "从这条主线建立知识连接" });
+    knowledgeCopy.createSpan({ text: knowledge.length ? knowledge.slice(0, 3).map((file) => file.basename).join(" · ") : "在笔记里添加双向链接即可开始" });
+    setIcon(knowledgeCard.createSpan({ cls: "mym-entry-arrow" }), "arrow-up-right");
+    knowledgeCard.addEventListener("click", () => void this.plugin.push(GRAPH_VIEW, { centerPath: goal.file.path }, goal.title));
+
+    const edit = page.createEl("button", { cls: "mym-edit-source" });
+    setIcon(edit.createSpan(), "pencil");
+    edit.createSpan({ text: "编辑这条主线的数据" });
+    edit.addEventListener("click", () => this.openNote(goal.file));
+  }
+
+  private heading(parent: HTMLElement, title: string, label: string): void {
+    const row = parent.createDiv({ cls: "mym-detail-heading" });
+    row.createEl("h2", { text: title });
+    row.createSpan({ text: label });
+  }
+
+  private stat(parent: HTMLElement, label: string, value: string, note: string): void {
+    const card = parent.createDiv({ cls: "mym-stat" });
+    card.createSpan({ text: label });
+    card.createEl("strong", { text: value });
+    card.createEl("small", { text: note });
   }
 }
 
@@ -264,7 +460,7 @@ class TimelineView extends MymView {
 
   onOpen(): Promise<void> {
     this.renderSafely();
-    this.watchVault(() => this.renderSafely());
+    this.startMobileLifecycle(() => this.renderSafely());
     return Promise.resolve();
   }
 
@@ -312,6 +508,10 @@ class SearchView extends MymView {
   onOpen(): Promise<void> {
     try { this.render(); }
     catch (error) { this.renderFailure(error, () => this.onOpen()); }
+    this.startMobileLifecycle(() => {
+      try { this.render(); }
+      catch (error) { this.renderFailure(error, () => this.onOpen()); }
+    });
     return Promise.resolve();
   }
 
@@ -374,15 +574,29 @@ class GraphView extends MymView {
   private panY = 0;
   private pointer?: { id: number; x: number; y: number; moved: boolean };
   private resize?: ResizeObserver;
+  private centerPath = "";
+  private nodeLimit = 36;
+  private updatePreview?: () => void;
 
   getViewType(): string { return GRAPH_VIEW; }
   getDisplayText(): string { return "知识图谱"; }
   getIcon(): string { return "orbit"; }
 
+  getState(): Record<string, unknown> { return { centerPath: this.centerPath }; }
+
+  async setState(state: Record<string, unknown>, result: unknown): Promise<void> {
+    await super.setState(state, result as never);
+    this.centerPath = asText(state.centerPath);
+    if (this.contentEl.isConnected) {
+      try { this.build(); this.updatePreview?.(); }
+      catch (error) { this.renderFailure(error, () => this.onOpen()); }
+    }
+  }
+
   onOpen(): Promise<void> {
     try { this.render(); }
     catch (error) { this.renderFailure(error, () => this.onOpen()); }
-    this.watchVault(() => {
+    this.startMobileLifecycle(() => {
       try { this.build(); }
       catch (error) { this.renderFailure(error, () => this.onOpen()); }
     });
@@ -399,11 +613,16 @@ class GraphView extends MymView {
     this.contentEl.addClass("mym-root", "mym-graph-root");
     const wrap = this.contentEl.createDiv({ cls: "mym-graph-wrap" });
     const top = wrap.createDiv({ cls: "mym-graph-top" });
-    const back = top.createEl("button", { attr: { "aria-label": "返回首页" } });
-    setIcon(back, "chevron-left");
-    back.addEventListener("click", () => void this.plugin.activate(HOME_VIEW));
-    top.createDiv({ cls: "mym-graph-title", text: "局部知识图谱" });
-    const reset = top.createEl("button", { attr: { "aria-label": "重置视图" } });
+    const back = top.createEl("button", { cls: "mym-graph-back", attr: { "aria-label": "返回上一页" } });
+    setIcon(back.createSpan(), "chevron-left");
+    back.createSpan({ text: this.plugin.previousLabel() });
+    back.addEventListener("click", () => void this.plugin.back());
+    top.createDiv({ cls: "mym-graph-title", text: "知识空间" });
+    const controls = top.createDiv({ cls: "mym-graph-controls" });
+    const more = controls.createEl("button", { attr: { "aria-label": "加载更多节点" } });
+    setIcon(more, "plus");
+    more.addEventListener("click", () => { this.nodeLimit = Math.min(72, this.nodeLimit + 18); this.build(); this.updatePreview?.(); });
+    const reset = controls.createEl("button", { attr: { "aria-label": "重置视图" } });
     setIcon(reset, "locate-fixed");
     reset.addEventListener("click", () => { this.scale = 1; this.panX = 0; this.panY = 0; this.draw(); });
     this.canvas = wrap.createEl("canvas", { cls: "mym-graph-canvas", attr: { "aria-label": "可缩放知识图谱" } });
@@ -422,6 +641,7 @@ class GraphView extends MymView {
       title.setText(node.file.basename);
       summary.setText(this.plugin.summary(node.file));
     };
+    this.updatePreview = updatePreview;
     this.canvas.addEventListener("pointerdown", (event) => {
       this.canvas?.setPointerCapture(event.pointerId);
       this.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
@@ -476,7 +696,8 @@ class GraphView extends MymView {
   private build(): void {
     const active = this.app.workspace.getActiveFile();
     const knowledge = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith("03 Knowledge/"));
-    this.center = active && active.extension === "md" ? active : knowledge[0] || this.app.vault.getMarkdownFiles()[0];
+    const requested = this.centerPath ? this.app.vault.getAbstractFileByPath(this.centerPath) : undefined;
+    this.center = requested instanceof TFile ? requested : active && active.extension === "md" ? active : knowledge[0] || this.app.vault.getMarkdownFiles()[0];
     if (!this.center) { this.nodes = []; this.edges = []; this.draw(); return; }
     const reverse = new Map<string, string[]>();
     Object.entries(this.app.metadataCache.resolvedLinks).forEach(([source, targets]) => {
@@ -489,7 +710,7 @@ class GraphView extends MymView {
     const chosen = new Map<string, number>();
     const queue: Array<{ file: TFile; level: number }> = [{ file: this.center, level: 0 }];
     const edges: GraphEdge[] = [];
-    while (queue.length && chosen.size < 80) {
+    while (queue.length && chosen.size < this.nodeLimit) {
       const current = queue.shift();
       if (!current || chosen.has(current.file.path) || current.level > 2) continue;
       const index = chosen.size;
@@ -563,6 +784,7 @@ class GraphView extends MymView {
       ctx.strokeStyle = active ? "rgba(126, 224, 179, .58)" : "rgba(154, 190, 178, .14)";
       ctx.lineWidth = active ? 1.6 : 1; ctx.stroke();
     });
+    const labels: Array<{ left: number; right: number; top: number; bottom: number }> = [];
     this.nodes.forEach((node, index) => {
       const point = this.screen(node); const active = adjacent.has(index); const selected = index === this.selected;
       const radius = (selected ? 13 : node.level === 0 ? 11 : node.level === 1 ? 7 : 4.5) * Math.sqrt(this.scale);
@@ -576,7 +798,14 @@ class GraphView extends MymView {
         ctx.textAlign = "center"; ctx.textBaseline = "top";
         ctx.fillStyle = active ? "rgba(239,250,245,.94)" : "rgba(197,215,208,.43)";
         const label = node.file.basename.length > 12 ? `${node.file.basename.slice(0, 11)}…` : node.file.basename;
-        ctx.fillText(label, point.x, point.y + radius + 7);
+        const width = ctx.measureText(label).width;
+        const top = point.y + radius + 7;
+        const box = { left: point.x - width / 2 - 3, right: point.x + width / 2 + 3, top, bottom: top + (selected ? 18 : 15) };
+        const overlaps = labels.some((other) => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top);
+        if (!overlaps || selected) {
+          ctx.fillText(label, point.x, top);
+          labels.push(box);
+        }
       }
     });
   }
@@ -643,36 +872,71 @@ class CaptureModal extends Modal {
 }
 
 export default class MymLifePlugin extends Plugin {
+  private navStack: NavEntry[] = [];
+
   async onload(): Promise<void> {
     this.registerView(HOME_VIEW, (leaf) => new HomeView(leaf, this));
+    this.registerView(DETAIL_VIEW, (leaf) => new DetailView(leaf, this));
     this.registerView(TIMELINE_VIEW, (leaf) => new TimelineView(leaf, this));
     this.registerView(GRAPH_VIEW, (leaf) => new GraphView(leaf, this));
     this.registerView(SEARCH_VIEW, (leaf) => new SearchView(leaf, this));
-    this.addRibbonIcon("sprout", "打开 MYM 人生首页", () => void this.activate(HOME_VIEW));
-    this.addCommand({ id: "open-life-home", name: "打开人生首页", callback: () => void this.activate(HOME_VIEW) });
+    this.addRibbonIcon("sprout", "打开 MYM 人生首页", () => void this.openRoot(HOME_VIEW));
+    this.addCommand({ id: "open-life-home", name: "打开人生首页", callback: () => void this.openRoot(HOME_VIEW) });
     this.addCommand({ id: "quick-capture", name: "快速记录到今天", callback: () => new CaptureModal(this.app).open() });
-    this.addCommand({ id: "open-life-graph", name: "打开局部知识图谱", callback: () => void this.activate(GRAPH_VIEW) });
+    this.addCommand({ id: "open-life-graph", name: "打开局部知识图谱", callback: () => void this.openRoot(GRAPH_VIEW) });
     this.app.workspace.onLayoutReady(() => {
-      void this.activate(HOME_VIEW).catch((error) => {
+      void this.openRoot(HOME_VIEW).catch((error) => {
         console.error("[MYM Life] failed to activate home view", error);
         new Notice("MYM 人生首页加载失败，请再次点击叶子图标");
       });
     });
   }
 
-  async activate(type: string): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(type);
-    let leaf = existing.find((candidate) => candidate.view.containerEl.isConnected) || existing[0];
+  private currentMymLeaf(): WorkspaceLeaf | undefined {
+    const recent = this.app.workspace.getMostRecentLeaf();
+    if (recent && MYM_VIEWS.includes(recent.view.getViewType() as typeof MYM_VIEWS[number])) return recent;
+    return MYM_VIEWS.flatMap((type) => this.app.workspace.getLeavesOfType(type)).find((candidate) => candidate.view.containerEl.isConnected);
+  }
+
+  private async transition(type: string, state: Record<string, unknown> = {}): Promise<void> {
+    let leaf = this.currentMymLeaf();
     if (leaf) {
-      await this.app.workspace.revealLeaf(leaf);
-      await leaf.loadIfDeferred();
-      if (leaf.view.containerEl.isConnected) return;
-      this.app.workspace.detachLeavesOfType(type);
+      await leaf.setViewState({ type, state, active: true });
+    } else {
+      const existing = this.app.workspace.getLeavesOfType(type);
+      leaf = existing.find((candidate) => candidate.view.containerEl.isConnected) || existing[0];
+      if (!leaf) leaf = this.app.workspace.getLeaf("tab");
+      await leaf.setViewState({ type, state, active: true });
     }
-    leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type, active: true });
     await this.app.workspace.revealLeaf(leaf);
     await leaf.loadIfDeferred();
+  }
+
+  async openRoot(type: string): Promise<void> {
+    this.navStack = [];
+    await this.transition(type);
+  }
+
+  async push(type: string, state: Record<string, unknown> = {}, label = "首页"): Promise<void> {
+    const leaf = this.currentMymLeaf();
+    if (leaf) {
+      const current = leaf.getViewState();
+      this.navStack.push({ type: current.type, state: (current.state || {}) as Record<string, unknown>, label });
+      if (this.navStack.length > 2) this.navStack.shift();
+    } else this.navStack.push({ type: HOME_VIEW, state: {}, label: "首页" });
+    await this.transition(type, state);
+  }
+
+  async back(): Promise<void> {
+    const previous = this.navStack.pop();
+    if (previous) await this.transition(previous.type, previous.state);
+    else await this.openRoot(HOME_VIEW);
+  }
+
+  previousLabel(): string { return this.navStack[this.navStack.length - 1]?.label || "首页"; }
+
+  async openGoal(goal: Goal): Promise<void> {
+    await this.push(DETAIL_VIEW, { goalPath: goal.file.path }, "首页");
   }
 
   async openToday(): Promise<void> {
@@ -706,6 +970,43 @@ export default class MymLifePlugin extends Plugin {
     }).sort((a, b) => b.updated - a.updated);
   }
 
+  goalForPath(path: string): Goal | undefined {
+    return this.goals().find((goal) => goal.file.path === path);
+  }
+
+  relatedKnowledge(file: TFile): TFile[] {
+    const found = new Map<string, TFile>();
+    const cache = this.app.metadataCache.getFileCache(file);
+    [...(cache?.links || []), ...(cache?.embeds || [])].forEach((link) => {
+      const target = this.app.metadataCache.getFirstLinkpathDest(link.link, file.path);
+      if (target?.extension === "md") found.set(target.path, target);
+    });
+    const outgoing = this.app.metadataCache.resolvedLinks[file.path] || {};
+    Object.keys(outgoing).forEach((path) => {
+      const target = this.app.vault.getAbstractFileByPath(path);
+      if (target instanceof TFile && target.extension === "md") found.set(target.path, target);
+    });
+    Object.entries(this.app.metadataCache.resolvedLinks).forEach(([source, targets]) => {
+      if (!targets[file.path]) return;
+      const target = this.app.vault.getAbstractFileByPath(source);
+      if (target instanceof TFile && target.extension === "md") found.set(target.path, target);
+    });
+    return Array.from(found.values()).filter((target) => target.path.startsWith("03 Knowledge/")).slice(0, 24);
+  }
+
+  mediaFor(file: TFile): Array<{ file: TFile; kind: "image" | "video" }> {
+    const image = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"]);
+    const video = new Set(["mp4", "mov", "m4v", "webm"]);
+    const cache = this.app.metadataCache.getFileCache(file);
+    const media: Array<{ file: TFile; kind: "image" | "video" }> = [];
+    (cache?.embeds || []).map((embed) => this.app.metadataCache.getFirstLinkpathDest(embed.link, file.path)).filter((target): target is TFile => target instanceof TFile).forEach((target) => {
+      const extension = target.extension.toLowerCase();
+      if (image.has(extension)) media.push({ file: target, kind: "image" });
+      else if (video.has(extension)) media.push({ file: target, kind: "video" });
+    });
+    return media;
+  }
+
   dailyFiles(): TFile[] {
     return this.app.vault.getMarkdownFiles().filter((file) => !file.path.startsWith("Templates/") && (file.path.startsWith("02 Daily/") || asText(this.frontmatter(file).type) === "daily")).sort((a, b) => b.basename.localeCompare(a.basename) || b.stat.mtime - a.stat.mtime);
   }
@@ -716,6 +1017,6 @@ export default class MymLifePlugin extends Plugin {
   }
 
   onunload(): void {
-    [HOME_VIEW, TIMELINE_VIEW, GRAPH_VIEW, SEARCH_VIEW].forEach((type) => this.app.workspace.detachLeavesOfType(type));
+    MYM_VIEWS.forEach((type) => this.app.workspace.detachLeavesOfType(type));
   }
 }

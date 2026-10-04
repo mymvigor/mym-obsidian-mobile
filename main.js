@@ -25,9 +25,11 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var HOME_VIEW = "mym-life-home";
+var DETAIL_VIEW = "mym-life-detail";
 var TIMELINE_VIEW = "mym-life-timeline";
 var GRAPH_VIEW = "mym-life-graph";
 var SEARCH_VIEW = "mym-life-search";
+var MYM_VIEWS = [HOME_VIEW, DETAIL_VIEW, TIMELINE_VIEW, GRAPH_VIEW, SEARCH_VIEW];
 function asText(value, fallback = "") {
   if (typeof value === "string" || typeof value === "number") return String(value);
   return fallback;
@@ -75,6 +77,40 @@ var MymView = class extends import_obsidian.ItemView {
     this.registerEvent(this.app.vault.on("delete", () => refresh()));
     this.registerEvent(this.app.vault.on("rename", () => refresh()));
   }
+  startMobileLifecycle(render) {
+    let largestHeight = 0;
+    let previousWidth = window.visualViewport?.width || window.innerWidth;
+    const sync = () => {
+      const viewport = window.visualViewport;
+      const available = viewport?.height || window.innerHeight;
+      const width = viewport?.width || window.innerWidth;
+      const hostHeight = this.contentEl.parentElement?.clientHeight || this.contentEl.clientHeight || available;
+      const height = Math.max(320, Math.min(available, hostHeight || available));
+      if (Math.abs(width - previousWidth) > 80) largestHeight = height;
+      else largestHeight = Math.max(largestHeight, height);
+      previousWidth = width;
+      this.contentEl.style.setProperty("--mym-app-height", `${Math.round(height)}px`);
+      this.contentEl.toggleClass("is-keyboard-open", largestHeight - height > 120);
+    };
+    sync();
+    this.registerDomEvent(window, "resize", sync);
+    this.registerDomEvent(window, "orientationchange", sync);
+    if (window.visualViewport) {
+      const viewport = window.visualViewport;
+      viewport.addEventListener("resize", sync);
+      viewport.addEventListener("scroll", sync);
+      this.register(() => {
+        viewport.removeEventListener("resize", sync);
+        viewport.removeEventListener("scroll", sync);
+      });
+    }
+    this.registerDomEvent(this.contentEl, "focusin", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      window.setTimeout(() => target.scrollIntoView({ block: "center", behavior: "smooth" }), 180);
+    });
+    this.watchVault(render);
+  }
   shell(active) {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
@@ -88,8 +124,19 @@ var MymView = class extends import_obsidian.ItemView {
       const button = dock.createEl("button", { cls: type === active ? "is-active" : "" });
       (0, import_obsidian.setIcon)(button.createSpan(), icon);
       button.createSpan({ text: label });
-      button.addEventListener("click", () => void this.plugin.activate(type));
+      button.addEventListener("click", () => void this.plugin.openRoot(type));
     });
+    return page;
+  }
+  detailShell(parentLabel = "\u9996\u9875") {
+    this.contentEl.empty();
+    this.contentEl.addClass("mym-root");
+    const page = this.contentEl.createDiv({ cls: "mym-page mym-detail-page" });
+    const nav = page.createDiv({ cls: "mym-app-nav" });
+    const back = nav.createEl("button", { cls: "mym-back", attr: { "aria-label": `\u8FD4\u56DE${parentLabel}` } });
+    (0, import_obsidian.setIcon)(back.createSpan(), "chevron-left");
+    back.createSpan({ text: parentLabel });
+    back.addEventListener("click", () => void this.plugin.back());
     return page;
   }
   renderFailure(error, retry) {
@@ -123,7 +170,7 @@ var HomeView = class extends MymView {
   }
   onOpen() {
     this.renderSafely();
-    this.watchVault(() => this.renderSafely());
+    this.startMobileLifecycle(() => this.renderSafely());
     return Promise.resolve();
   }
   renderSafely() {
@@ -144,7 +191,7 @@ var HomeView = class extends MymView {
     const quick = page.createDiv({ cls: "mym-quick" });
     this.quickButton(quick, "plus", "\u8BB0\u5F55", () => new CaptureModal(this.app).open());
     this.quickButton(quick, "calendar-check", "\u4ECA\u5929", () => void this.plugin.openToday());
-    this.quickButton(quick, "orbit", "\u56FE\u8C31", () => void this.plugin.activate(GRAPH_VIEW));
+    this.quickButton(quick, "orbit", "\u56FE\u8C31", () => void this.plugin.push(GRAPH_VIEW, {}, "\u9996\u9875"));
     const goals = this.plugin.goals();
     this.sectionHeading(page, "\u5F53\u524D\u91CD\u70B9", "\u53EA\u653E\u771F\u6B63\u6295\u5165\u7684\u4E8B");
     const focus = goals.filter((goal) => goal.status === "focus").slice(0, 5);
@@ -162,7 +209,7 @@ var HomeView = class extends MymView {
       card.createSpan({ cls: "mym-recap-domain", text: goal.domain || goal.title });
       card.createEl("strong", { text: goal.metric || (goal.progress === void 0 ? "\u72B6\u6001\u66F4\u65B0" : `${goal.progress}%`) });
       card.createSpan({ text: goal.recap || "\u8FDB\u5EA6\u5DF2\u66F4\u65B0" });
-      card.addEventListener("click", () => this.openNote(goal.file));
+      card.addEventListener("click", () => void this.plugin.openGoal(goal));
     });
     if (recaps.length === 0) recapGrid.createDiv({ cls: "mym-muted", text: "\u5728\u76EE\u6807\u5C5E\u6027\u4E2D\u586B\u5199 metric \u6216 recap \u540E\u663E\u793A\u3002" });
     const groups = [["active", "\u5176\u4ED6\u8FDB\u884C\u4E2D"], ["paused", "\u6682\u505C / \u7B49\u5F85"], ["done", "\u5DF2\u5B8C\u6210 / \u5DF2\u8D70\u8FC7"]];
@@ -175,7 +222,7 @@ var HomeView = class extends MymView {
         const row = compact.createEl("button", { cls: "mym-goal-compact" });
         row.createSpan({ text: goal.title });
         row.createSpan({ cls: "mym-muted", text: goal.metric || (goal.progress === void 0 ? "\u67E5\u770B" : `${goal.progress}%`) });
-        row.addEventListener("click", () => this.openNote(goal.file));
+        row.addEventListener("click", () => void this.plugin.openGoal(goal));
       });
     });
     this.sectionHeading(page, "\u6700\u8FD1\u53D1\u751F", "Markdown \u65F6\u95F4\u6D41");
@@ -224,7 +271,144 @@ var HomeView = class extends MymView {
       const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 864e5);
       card.createSpan({ cls: "mym-goal-due", text: days >= 0 ? `\u8FD8\u6709 ${days} \u5929` : `\u5DF2\u8FC7 ${Math.abs(days)} \u5929` });
     }
-    card.addEventListener("click", () => this.openNote(goal.file));
+    card.addEventListener("click", () => void this.plugin.openGoal(goal));
+  }
+};
+var DetailView = class extends MymView {
+  constructor() {
+    super(...arguments);
+    this.goalPath = "";
+  }
+  getViewType() {
+    return DETAIL_VIEW;
+  }
+  getDisplayText() {
+    return "\u4E3B\u7EBF\u8BE6\u60C5";
+  }
+  getIcon() {
+    return "leaf";
+  }
+  getState() {
+    return { goalPath: this.goalPath };
+  }
+  async setState(state, result) {
+    await super.setState(state, result);
+    this.goalPath = asText(state.goalPath);
+    if (this.contentEl.isConnected) this.renderSafely();
+  }
+  onOpen() {
+    this.renderSafely();
+    this.startMobileLifecycle(() => this.renderSafely());
+    return Promise.resolve();
+  }
+  renderSafely() {
+    try {
+      this.render();
+    } catch (error) {
+      this.renderFailure(error, () => this.renderSafely());
+    }
+  }
+  render() {
+    const page = this.detailShell("\u9996\u9875");
+    if (!this.goalPath) {
+      const loading = page.createDiv({ cls: "mym-state-card mym-loading", attr: { role: "status", "aria-live": "polite" } });
+      loading.createDiv({ cls: "mym-state-orb" });
+      loading.createEl("h1", { text: "\u6B63\u5728\u6253\u5F00\u4E3B\u7EBF" });
+      loading.createEl("p", { text: "MYM \u6B63\u5728\u6574\u7406\u8FD9\u4E00\u6BB5\u4EBA\u751F\u3002" });
+      return;
+    }
+    const goal = this.plugin.goalForPath(this.goalPath);
+    if (!goal) {
+      const missing = page.createDiv({ cls: "mym-state-card" });
+      const icon = missing.createDiv({ cls: "mym-state-icon" });
+      (0, import_obsidian.setIcon)(icon, "file-question");
+      missing.createEl("h1", { text: "\u8FD9\u6761\u4E3B\u7EBF\u6682\u65F6\u627E\u4E0D\u5230" });
+      missing.createEl("p", { text: "\u7B14\u8BB0\u53EF\u80FD\u521A\u521A\u79FB\u52A8\u6216\u91CD\u547D\u540D\u3002\u8FD4\u56DE\u9996\u9875\u540E\uFF0CMYM \u4F1A\u6839\u636E\u6700\u65B0\u7D22\u5F15\u91CD\u65B0\u6574\u7406\u3002" });
+      const button = missing.createEl("button", { cls: "mym-primary-button", text: "\u8FD4\u56DE\u9996\u9875" });
+      button.addEventListener("click", () => void this.plugin.openRoot(HOME_VIEW));
+      return;
+    }
+    const statusText = { focus: "\u5F53\u524D\u91CD\u70B9", active: "\u8FDB\u884C\u4E2D", paused: "\u6682\u65F6\u653E\u4E0B", done: "\u5DF2\u7ECF\u5B8C\u6210" };
+    const hero = page.createDiv({ cls: "mym-line-hero" });
+    const meta = hero.createDiv({ cls: "mym-line-meta" });
+    meta.createSpan({ text: goal.domain || "\u4EBA\u751F\u4E3B\u7EBF" });
+    meta.createSpan({ text: statusText[goal.status] });
+    hero.createEl("h1", { text: goal.title });
+    hero.createEl("p", { text: goal.recap || "\u8FD9\u4E00\u6BB5\u8FD8\u6CA1\u6709\u5199\u4E0B\u9636\u6BB5\u56DE\u987E\u3002" });
+    const overview = page.createDiv({ cls: "mym-overview-card" });
+    const progress = overview.createDiv({ cls: "mym-progress-ring", attr: { style: `--mym-progress:${goal.progress ?? 0}` } });
+    const progressText = progress.createDiv();
+    progressText.createEl("strong", { text: goal.progress === void 0 ? "\u2014" : `${goal.progress}%` });
+    progressText.createSpan({ text: "\u5F53\u524D\u8FDB\u5EA6" });
+    const overviewText = overview.createDiv({ cls: "mym-overview-copy" });
+    overviewText.createSpan({ cls: "mym-kicker", text: "\u73B0\u5728\u6700\u91CD\u8981\u7684\u53CD\u9988" });
+    overviewText.createEl("h2", { text: goal.metric || "\u4FDD\u6301\u8282\u594F" });
+    if (goal.due) {
+      const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 864e5);
+      overviewText.createEl("p", { text: days >= 0 ? `\u8DDD\u79BB\u8282\u70B9\u8FD8\u6709 ${days} \u5929` : `\u8FD9\u4E2A\u8282\u70B9\u5DF2\u8FC7\u53BB ${Math.abs(days)} \u5929` });
+    } else overviewText.createEl("p", { text: "\u4E0D\u8FFD\u8D76\u522B\u4EBA\u7684\u65F6\u95F4\uFF0C\u53EA\u770B\u81EA\u5DF1\u7684\u53D8\u5316\u3002" });
+    const stats = page.createDiv({ cls: "mym-stat-grid" });
+    this.stat(stats, "\u8D8B\u52BF", goal.progress === void 0 ? "\u6301\u7EED\u4E2D" : `${goal.progress}%`, "\u6765\u81EA\u76EE\u6807\u5C5E\u6027");
+    const recent = this.plugin.dailyFiles().slice(0, 7);
+    this.stat(stats, "\u6700\u8FD1\u4EBA\u751F", `${recent.length} \u6761`, "\u8FD1\u671F\u5F00\u542F\u7684\u8BB0\u5F55");
+    const knowledge = this.plugin.relatedKnowledge(goal.file);
+    this.stat(stats, "\u77E5\u8BC6\u8FDE\u63A5", `${knowledge.length} \u4E2A`, "\u4E00\u5230\u4E24\u5C42\u5C40\u90E8\u5173\u7CFB");
+    this.heading(page, "\u9636\u6BB5\u56DE\u987E", "Recap");
+    const recap = page.createDiv({ cls: "mym-feature-card" });
+    recap.createDiv({ cls: "mym-feature-mark", text: "\u201C" });
+    recap.createEl("p", { text: goal.recap || "\u8FD9\u91CC\u8FD8\u6CA1\u6709\u9636\u6BB5\u56DE\u987E\u3002\u7B49\u53D1\u751F\u771F\u5B9E\u53D8\u5316\u65F6\uFF0C\u518D\u5199\u4E0B\u4E00\u53E5\u3002" });
+    recap.createSpan({ text: goal.metric || "\u7B49\u5F85\u4E0B\u4E00\u6B21\u771F\u5B9E\u53CD\u9988" });
+    const media = this.plugin.mediaFor(goal.file);
+    this.heading(page, "\u53D8\u5316\u5F71\u50CF", media.length ? `${media.length} \u9879` : "\u7167\u7247 / \u89C6\u9891");
+    if (media.length) {
+      const strip = page.createDiv({ cls: "mym-media-strip" });
+      media.slice(0, 5).forEach(({ file, kind }) => {
+        const frame = strip.createDiv({ cls: "mym-media-frame" });
+        const source = this.app.vault.getResourcePath(file);
+        if (kind === "video") frame.createEl("video", { attr: { src: source, controls: "", preload: "metadata", playsinline: "" } });
+        else frame.createEl("img", { attr: { src: source, alt: file.basename, decoding: "async" } });
+        frame.createSpan({ text: file.basename });
+      });
+    } else {
+      const empty = page.createDiv({ cls: "mym-empty mym-empty-soft" });
+      empty.createSpan({ text: "\u8FD8\u6CA1\u6709\u7167\u7247\u6216\u89C6\u9891\u3002\u628A\u672C\u5730\u5A92\u4F53\u5D4C\u5165\u4E3B\u7EBF\u7B14\u8BB0\u540E\uFF0C\u5B83\u4F1A\u81EA\u7136\u51FA\u73B0\u5728\u8FD9\u91CC\u3002" });
+    }
+    this.heading(page, "\u6700\u8FD1\u8BB0\u5F55", "\u751F\u6D3B\u7559\u4E0B\u7684\u75D5\u8FF9");
+    const stream = page.createDiv({ cls: "mym-detail-stream" });
+    if (!recent.length) stream.createDiv({ cls: "mym-empty mym-empty-soft", text: "\u8FD9\u91CC\u8FD8\u6CA1\u6709\u5185\u5BB9\u3002\u8BB0\u5F55\u7B2C\u4E00\u6BB5\u751F\u6D3B\u540E\u518D\u56DE\u6765\u770B\u770B\u3002" });
+    recent.slice(0, 4).forEach((file) => {
+      const row = stream.createEl("button", { cls: "mym-detail-entry" });
+      row.createSpan({ cls: "mym-entry-date", text: dateLabel(file.stat.mtime) });
+      const copy = row.createDiv();
+      copy.createEl("strong", { text: file.basename });
+      copy.createSpan({ text: this.plugin.summary(file) });
+      (0, import_obsidian.setIcon)(row.createSpan({ cls: "mym-entry-arrow" }), "chevron-right");
+      row.addEventListener("click", () => this.openNote(file));
+    });
+    this.heading(page, "\u76F8\u5173\u77E5\u8BC6", knowledge.length ? `${knowledge.length} \u4E2A\u8FDE\u63A5` : "\u5C40\u90E8\u56FE\u8C31");
+    const knowledgeCard = page.createEl("button", { cls: "mym-knowledge-entry" });
+    const knowledgeIcon = knowledgeCard.createDiv({ cls: "mym-knowledge-icon" });
+    (0, import_obsidian.setIcon)(knowledgeIcon, "orbit");
+    const knowledgeCopy = knowledgeCard.createDiv();
+    knowledgeCopy.createEl("strong", { text: knowledge.length ? "\u8FDB\u5165\u6C89\u6D78\u77E5\u8BC6\u56FE\u8C31" : "\u4ECE\u8FD9\u6761\u4E3B\u7EBF\u5EFA\u7ACB\u77E5\u8BC6\u8FDE\u63A5" });
+    knowledgeCopy.createSpan({ text: knowledge.length ? knowledge.slice(0, 3).map((file) => file.basename).join(" \xB7 ") : "\u5728\u7B14\u8BB0\u91CC\u6DFB\u52A0\u53CC\u5411\u94FE\u63A5\u5373\u53EF\u5F00\u59CB" });
+    (0, import_obsidian.setIcon)(knowledgeCard.createSpan({ cls: "mym-entry-arrow" }), "arrow-up-right");
+    knowledgeCard.addEventListener("click", () => void this.plugin.push(GRAPH_VIEW, { centerPath: goal.file.path }, goal.title));
+    const edit = page.createEl("button", { cls: "mym-edit-source" });
+    (0, import_obsidian.setIcon)(edit.createSpan(), "pencil");
+    edit.createSpan({ text: "\u7F16\u8F91\u8FD9\u6761\u4E3B\u7EBF\u7684\u6570\u636E" });
+    edit.addEventListener("click", () => this.openNote(goal.file));
+  }
+  heading(parent, title, label) {
+    const row = parent.createDiv({ cls: "mym-detail-heading" });
+    row.createEl("h2", { text: title });
+    row.createSpan({ text: label });
+  }
+  stat(parent, label, value, note) {
+    const card = parent.createDiv({ cls: "mym-stat" });
+    card.createSpan({ text: label });
+    card.createEl("strong", { text: value });
+    card.createEl("small", { text: note });
   }
 };
 var TimelineView = class extends MymView {
@@ -239,7 +423,7 @@ var TimelineView = class extends MymView {
   }
   onOpen() {
     this.renderSafely();
-    this.watchVault(() => this.renderSafely());
+    this.startMobileLifecycle(() => this.renderSafely());
     return Promise.resolve();
   }
   renderSafely() {
@@ -294,6 +478,13 @@ var SearchView = class extends MymView {
     } catch (error) {
       this.renderFailure(error, () => this.onOpen());
     }
+    this.startMobileLifecycle(() => {
+      try {
+        this.render();
+      } catch (error) {
+        this.renderFailure(error, () => this.onOpen());
+      }
+    });
     return Promise.resolve();
   }
   render() {
@@ -349,6 +540,8 @@ var GraphView = class extends MymView {
     this.scale = 1;
     this.panX = 0;
     this.panY = 0;
+    this.centerPath = "";
+    this.nodeLimit = 36;
   }
   getViewType() {
     return GRAPH_VIEW;
@@ -359,13 +552,28 @@ var GraphView = class extends MymView {
   getIcon() {
     return "orbit";
   }
+  getState() {
+    return { centerPath: this.centerPath };
+  }
+  async setState(state, result) {
+    await super.setState(state, result);
+    this.centerPath = asText(state.centerPath);
+    if (this.contentEl.isConnected) {
+      try {
+        this.build();
+        this.updatePreview?.();
+      } catch (error) {
+        this.renderFailure(error, () => this.onOpen());
+      }
+    }
+  }
   onOpen() {
     try {
       this.render();
     } catch (error) {
       this.renderFailure(error, () => this.onOpen());
     }
-    this.watchVault(() => {
+    this.startMobileLifecycle(() => {
       try {
         this.build();
       } catch (error) {
@@ -383,11 +591,20 @@ var GraphView = class extends MymView {
     this.contentEl.addClass("mym-root", "mym-graph-root");
     const wrap = this.contentEl.createDiv({ cls: "mym-graph-wrap" });
     const top = wrap.createDiv({ cls: "mym-graph-top" });
-    const back = top.createEl("button", { attr: { "aria-label": "\u8FD4\u56DE\u9996\u9875" } });
-    (0, import_obsidian.setIcon)(back, "chevron-left");
-    back.addEventListener("click", () => void this.plugin.activate(HOME_VIEW));
-    top.createDiv({ cls: "mym-graph-title", text: "\u5C40\u90E8\u77E5\u8BC6\u56FE\u8C31" });
-    const reset = top.createEl("button", { attr: { "aria-label": "\u91CD\u7F6E\u89C6\u56FE" } });
+    const back = top.createEl("button", { cls: "mym-graph-back", attr: { "aria-label": "\u8FD4\u56DE\u4E0A\u4E00\u9875" } });
+    (0, import_obsidian.setIcon)(back.createSpan(), "chevron-left");
+    back.createSpan({ text: this.plugin.previousLabel() });
+    back.addEventListener("click", () => void this.plugin.back());
+    top.createDiv({ cls: "mym-graph-title", text: "\u77E5\u8BC6\u7A7A\u95F4" });
+    const controls = top.createDiv({ cls: "mym-graph-controls" });
+    const more = controls.createEl("button", { attr: { "aria-label": "\u52A0\u8F7D\u66F4\u591A\u8282\u70B9" } });
+    (0, import_obsidian.setIcon)(more, "plus");
+    more.addEventListener("click", () => {
+      this.nodeLimit = Math.min(72, this.nodeLimit + 18);
+      this.build();
+      this.updatePreview?.();
+    });
+    const reset = controls.createEl("button", { attr: { "aria-label": "\u91CD\u7F6E\u89C6\u56FE" } });
     (0, import_obsidian.setIcon)(reset, "locate-fixed");
     reset.addEventListener("click", () => {
       this.scale = 1;
@@ -417,6 +634,7 @@ var GraphView = class extends MymView {
       title.setText(node.file.basename);
       summary.setText(this.plugin.summary(node.file));
     };
+    this.updatePreview = updatePreview;
     this.canvas.addEventListener("pointerdown", (event) => {
       this.canvas?.setPointerCapture(event.pointerId);
       this.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
@@ -479,7 +697,8 @@ var GraphView = class extends MymView {
   build() {
     const active = this.app.workspace.getActiveFile();
     const knowledge = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith("03 Knowledge/"));
-    this.center = active && active.extension === "md" ? active : knowledge[0] || this.app.vault.getMarkdownFiles()[0];
+    const requested = this.centerPath ? this.app.vault.getAbstractFileByPath(this.centerPath) : void 0;
+    this.center = requested instanceof import_obsidian.TFile ? requested : active && active.extension === "md" ? active : knowledge[0] || this.app.vault.getMarkdownFiles()[0];
     if (!this.center) {
       this.nodes = [];
       this.edges = [];
@@ -497,7 +716,7 @@ var GraphView = class extends MymView {
     const chosen = /* @__PURE__ */ new Map();
     const queue = [{ file: this.center, level: 0 }];
     const edges = [];
-    while (queue.length && chosen.size < 80) {
+    while (queue.length && chosen.size < this.nodeLimit) {
       const current = queue.shift();
       if (!current || chosen.has(current.file.path) || current.level > 2) continue;
       const index = chosen.size;
@@ -576,6 +795,7 @@ var GraphView = class extends MymView {
       ctx.lineWidth = active ? 1.6 : 1;
       ctx.stroke();
     });
+    const labels = [];
     this.nodes.forEach((node, index) => {
       const point = this.screen(node);
       const active = adjacent.has(index);
@@ -596,7 +816,14 @@ var GraphView = class extends MymView {
         ctx.textBaseline = "top";
         ctx.fillStyle = active ? "rgba(239,250,245,.94)" : "rgba(197,215,208,.43)";
         const label = node.file.basename.length > 12 ? `${node.file.basename.slice(0, 11)}\u2026` : node.file.basename;
-        ctx.fillText(label, point.x, point.y + radius + 7);
+        const width = ctx.measureText(label).width;
+        const top = point.y + radius + 7;
+        const box = { left: point.x - width / 2 - 3, right: point.x + width / 2 + 3, top, bottom: top + (selected ? 18 : 15) };
+        const overlaps = labels.some((other) => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top);
+        if (!overlaps || selected) {
+          ctx.fillText(label, point.x, top);
+          labels.push(box);
+        }
       }
     });
   }
@@ -691,35 +918,68 @@ date: ${localDate()}
   }
 };
 var MymLifePlugin = class extends import_obsidian.Plugin {
+  constructor() {
+    super(...arguments);
+    this.navStack = [];
+  }
   async onload() {
     this.registerView(HOME_VIEW, (leaf) => new HomeView(leaf, this));
+    this.registerView(DETAIL_VIEW, (leaf) => new DetailView(leaf, this));
     this.registerView(TIMELINE_VIEW, (leaf) => new TimelineView(leaf, this));
     this.registerView(GRAPH_VIEW, (leaf) => new GraphView(leaf, this));
     this.registerView(SEARCH_VIEW, (leaf) => new SearchView(leaf, this));
-    this.addRibbonIcon("sprout", "\u6253\u5F00 MYM \u4EBA\u751F\u9996\u9875", () => void this.activate(HOME_VIEW));
-    this.addCommand({ id: "open-life-home", name: "\u6253\u5F00\u4EBA\u751F\u9996\u9875", callback: () => void this.activate(HOME_VIEW) });
+    this.addRibbonIcon("sprout", "\u6253\u5F00 MYM \u4EBA\u751F\u9996\u9875", () => void this.openRoot(HOME_VIEW));
+    this.addCommand({ id: "open-life-home", name: "\u6253\u5F00\u4EBA\u751F\u9996\u9875", callback: () => void this.openRoot(HOME_VIEW) });
     this.addCommand({ id: "quick-capture", name: "\u5FEB\u901F\u8BB0\u5F55\u5230\u4ECA\u5929", callback: () => new CaptureModal(this.app).open() });
-    this.addCommand({ id: "open-life-graph", name: "\u6253\u5F00\u5C40\u90E8\u77E5\u8BC6\u56FE\u8C31", callback: () => void this.activate(GRAPH_VIEW) });
+    this.addCommand({ id: "open-life-graph", name: "\u6253\u5F00\u5C40\u90E8\u77E5\u8BC6\u56FE\u8C31", callback: () => void this.openRoot(GRAPH_VIEW) });
     this.app.workspace.onLayoutReady(() => {
-      void this.activate(HOME_VIEW).catch((error) => {
+      void this.openRoot(HOME_VIEW).catch((error) => {
         console.error("[MYM Life] failed to activate home view", error);
         new import_obsidian.Notice("MYM \u4EBA\u751F\u9996\u9875\u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u518D\u6B21\u70B9\u51FB\u53F6\u5B50\u56FE\u6807");
       });
     });
   }
-  async activate(type) {
-    const existing = this.app.workspace.getLeavesOfType(type);
-    let leaf = existing.find((candidate) => candidate.view.containerEl.isConnected) || existing[0];
+  currentMymLeaf() {
+    const recent = this.app.workspace.getMostRecentLeaf();
+    if (recent && MYM_VIEWS.includes(recent.view.getViewType())) return recent;
+    return MYM_VIEWS.flatMap((type) => this.app.workspace.getLeavesOfType(type)).find((candidate) => candidate.view.containerEl.isConnected);
+  }
+  async transition(type, state = {}) {
+    let leaf = this.currentMymLeaf();
     if (leaf) {
-      await this.app.workspace.revealLeaf(leaf);
-      await leaf.loadIfDeferred();
-      if (leaf.view.containerEl.isConnected) return;
-      this.app.workspace.detachLeavesOfType(type);
+      await leaf.setViewState({ type, state, active: true });
+    } else {
+      const existing = this.app.workspace.getLeavesOfType(type);
+      leaf = existing.find((candidate) => candidate.view.containerEl.isConnected) || existing[0];
+      if (!leaf) leaf = this.app.workspace.getLeaf("tab");
+      await leaf.setViewState({ type, state, active: true });
     }
-    leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type, active: true });
     await this.app.workspace.revealLeaf(leaf);
     await leaf.loadIfDeferred();
+  }
+  async openRoot(type) {
+    this.navStack = [];
+    await this.transition(type);
+  }
+  async push(type, state = {}, label = "\u9996\u9875") {
+    const leaf = this.currentMymLeaf();
+    if (leaf) {
+      const current = leaf.getViewState();
+      this.navStack.push({ type: current.type, state: current.state || {}, label });
+      if (this.navStack.length > 2) this.navStack.shift();
+    } else this.navStack.push({ type: HOME_VIEW, state: {}, label: "\u9996\u9875" });
+    await this.transition(type, state);
+  }
+  async back() {
+    const previous = this.navStack.pop();
+    if (previous) await this.transition(previous.type, previous.state);
+    else await this.openRoot(HOME_VIEW);
+  }
+  previousLabel() {
+    return this.navStack[this.navStack.length - 1]?.label || "\u9996\u9875";
+  }
+  async openGoal(goal) {
+    await this.push(DETAIL_VIEW, { goalPath: goal.file.path }, "\u9996\u9875");
   }
   async openToday() {
     const path = `02 Daily/${localDate()}.md`;
@@ -758,6 +1018,40 @@ date: ${localDate()}
       };
     }).sort((a, b) => b.updated - a.updated);
   }
+  goalForPath(path) {
+    return this.goals().find((goal) => goal.file.path === path);
+  }
+  relatedKnowledge(file) {
+    const found = /* @__PURE__ */ new Map();
+    const cache = this.app.metadataCache.getFileCache(file);
+    [...cache?.links || [], ...cache?.embeds || []].forEach((link) => {
+      const target = this.app.metadataCache.getFirstLinkpathDest(link.link, file.path);
+      if (target?.extension === "md") found.set(target.path, target);
+    });
+    const outgoing = this.app.metadataCache.resolvedLinks[file.path] || {};
+    Object.keys(outgoing).forEach((path) => {
+      const target = this.app.vault.getAbstractFileByPath(path);
+      if (target instanceof import_obsidian.TFile && target.extension === "md") found.set(target.path, target);
+    });
+    Object.entries(this.app.metadataCache.resolvedLinks).forEach(([source, targets]) => {
+      if (!targets[file.path]) return;
+      const target = this.app.vault.getAbstractFileByPath(source);
+      if (target instanceof import_obsidian.TFile && target.extension === "md") found.set(target.path, target);
+    });
+    return Array.from(found.values()).filter((target) => target.path.startsWith("03 Knowledge/")).slice(0, 24);
+  }
+  mediaFor(file) {
+    const image = /* @__PURE__ */ new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"]);
+    const video = /* @__PURE__ */ new Set(["mp4", "mov", "m4v", "webm"]);
+    const cache = this.app.metadataCache.getFileCache(file);
+    const media = [];
+    (cache?.embeds || []).map((embed) => this.app.metadataCache.getFirstLinkpathDest(embed.link, file.path)).filter((target) => target instanceof import_obsidian.TFile).forEach((target) => {
+      const extension = target.extension.toLowerCase();
+      if (image.has(extension)) media.push({ file: target, kind: "image" });
+      else if (video.has(extension)) media.push({ file: target, kind: "video" });
+    });
+    return media;
+  }
   dailyFiles() {
     return this.app.vault.getMarkdownFiles().filter((file) => !file.path.startsWith("Templates/") && (file.path.startsWith("02 Daily/") || asText(this.frontmatter(file).type) === "daily")).sort((a, b) => b.basename.localeCompare(a.basename) || b.stat.mtime - a.stat.mtime);
   }
@@ -766,6 +1060,6 @@ date: ${localDate()}
     return asText(fm.recap) || asText(fm.summary) || asText(fm.metric) || file.path;
   }
   onunload() {
-    [HOME_VIEW, TIMELINE_VIEW, GRAPH_VIEW, SEARCH_VIEW].forEach((type) => this.app.workspace.detachLeavesOfType(type));
+    MYM_VIEWS.forEach((type) => this.app.workspace.detachLeavesOfType(type));
   }
 };

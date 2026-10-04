@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0
+
+- Rebuilt the mobile experience around MYM custom App Views and a three-level navigation stack.
+- Added a native-style life-line detail view for goals, progress, recap, media, recent entries, and knowledge.
+- Added Visual Viewport, keyboard, Dynamic Island, Home Indicator, landscape, and small-screen layout handling.
+- Upgraded the local knowledge graph with progressive loading, focused relationships, collision-aware labels, and preview cards.
+- Unified design tokens, typography, cards, spacing, navigation, loading, empty, and error states.
+
 ## 1.0.0
 
 - 首次公开发布。
