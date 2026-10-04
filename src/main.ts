@@ -3,6 +3,7 @@ import {
   ItemView,
   Modal,
   Notice,
+  Platform,
   Plugin,
   TFile,
   WorkspaceLeaf,
@@ -41,6 +42,22 @@ interface Goal {
   updated: number;
 }
 
+interface MediaItem {
+  file: TFile;
+  kind: "image" | "video" | "audio";
+}
+
+interface PresentationModel {
+  displayTitle: string;
+  subtitle: string;
+  date: string;
+  time: string;
+  previewText: string;
+  media: MediaItem[];
+  category: string;
+  metric: string;
+}
+
 interface GraphNode {
   file: TFile;
   x: number;
@@ -68,6 +85,19 @@ function statusOf(value: unknown): GoalStatus {
 
 function dateLabel(epoch: number): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(new Date(epoch));
+}
+
+function heroDate(epoch: number): string {
+  return new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(new Date(epoch));
+}
+
+function timeLabel(epoch: number): string {
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(epoch));
+}
+
+function calendarDate(raw: string): string {
+  const date = new Date(raw);
+  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "numeric", day: "numeric" }).format(date) : raw;
 }
 
 function localDate(): string {
@@ -98,6 +128,7 @@ abstract class MymView extends ItemView {
   onClose(): Promise<void> {
     this.cleanups.forEach((fn) => fn());
     this.cleanups = [];
+    this.plugin.leaveMym(this);
     return Promise.resolve();
   }
 
@@ -110,6 +141,7 @@ abstract class MymView extends ItemView {
   }
 
   protected startMobileLifecycle(render: () => void): void {
+    this.plugin.enterMym(this);
     let largestHeight = 0;
     let previousWidth = window.visualViewport?.width || window.innerWidth;
     const sync = (): void => {
@@ -122,6 +154,9 @@ abstract class MymView extends ItemView {
       else largestHeight = Math.max(largestHeight, height);
       previousWidth = width;
       this.contentEl.style.setProperty("--mym-app-height", `${Math.round(height)}px`);
+      this.contentEl.style.setProperty("--mym-host-bottom", `${this.plugin.hostBottomInset(this.contentEl)}px`);
+      document.body.style.setProperty("--mym-vv-height", `${Math.round(height)}px`);
+      document.body.style.setProperty("--mym-vv-top", `${Math.round(viewport?.offsetTop || 0)}px`);
       this.contentEl.toggleClass("is-keyboard-open", largestHeight - height > 120);
     };
     sync();
@@ -192,11 +227,9 @@ abstract class MymView extends ItemView {
     const card = page.createDiv({ cls: "mym-error", attr: { role: "alert" } });
     const icon = card.createDiv({ cls: "mym-error-icon" });
     setIcon(icon, "circle-alert");
-    card.createEl("h1", { text: "首页暂时没有加载出来" });
-    card.createEl("p", { text: "MYM 已保护你的数据。可以立即重试；如果仍失败，错误已写入开发者控制台。" });
-    const detail = error instanceof Error ? error.message : String(error);
-    card.createEl("code", { text: detail || "未知渲染错误" });
-    const button = card.createEl("button", { text: "重新加载首页" });
+    card.createEl("h1", { text: "页面暂时没有加载出来" });
+    card.createEl("p", { text: "你的内容没有丢失。请重新加载当前页面。" });
+    const button = card.createEl("button", { text: "重新加载" });
     button.addEventListener("click", retry);
   }
 
@@ -210,14 +243,20 @@ class HomeView extends MymView {
   getDisplayText(): string { return "人生首页"; }
   getIcon(): string { return "sprout"; }
 
-  onOpen(): Promise<void> {
-    this.renderSafely();
-    this.startMobileLifecycle(() => this.renderSafely());
-    return Promise.resolve();
+  async onOpen(): Promise<void> {
+    await this.renderSafely();
+    this.startMobileLifecycle(() => void this.renderSafely());
   }
 
-  private renderSafely(): void {
-    try { this.render(); }
+  private async renderSafely(): Promise<void> {
+    try {
+      const files = this.app.vault.getMarkdownFiles().filter((file) => {
+        const type = asText(this.plugin.frontmatter(file).type);
+        return type === "goal" || type === "daily" || type === "home" || file.path.startsWith("02 Daily/");
+      });
+      await this.plugin.hydrate(files);
+      this.render();
+    }
     catch (error) { this.renderFailure(error, () => this.renderSafely()); }
   }
 
@@ -230,7 +269,7 @@ class HomeView extends MymView {
     const hero = page.createDiv({ cls: `mym-home-hero${heroFile ? " has-image" : ""}` });
     if (heroFile) hero.style.setProperty("--mym-hero-image", `url("${this.app.vault.getResourcePath(heroFile)}")`);
     const heroTop = hero.createDiv({ cls: "mym-home-hero-top" });
-    heroTop.createSpan({ text: dateLabel(Date.now()) });
+    heroTop.createSpan({ text: heroDate(Date.now()) });
     const heroAction = heroTop.createEl("button", { attr: { "aria-label": "打开搜索" } });
     setIcon(heroAction, "search");
     heroAction.addEventListener("click", () => void this.plugin.push(SEARCH_VIEW, {}, "首页"));
@@ -243,7 +282,7 @@ class HomeView extends MymView {
     const allGoals = heading.createEl("button", { text: "全部" });
     allGoals.addEventListener("click", () => void this.plugin.push(GOALS_VIEW, {}, "首页"));
     const focus = goals.filter((goal) => goal.status === "focus").slice(0, 5);
-    if (focus.length === 0) this.emptyState(page, "把目标的 status 改为 focus，它就会出现在这里。", "04 Goals/目标使用说明.md");
+    if (focus.length === 0) this.emptyState(page);
     else {
       const list = page.createDiv({ cls: "mym-focus-compact" });
       focus.forEach((goal) => {
@@ -255,13 +294,15 @@ class HomeView extends MymView {
         const copy = card.createDiv({ cls: "mym-focus-copy" });
         copy.createEl("strong", { text: goal.title });
         copy.createSpan({ text: goal.metric || goal.recap || "继续推进" });
-        const track = copy.createDiv({ cls: "mym-progress", attr: { role: "progressbar", "aria-valuenow": String(goal.progress ?? 0), "aria-valuemin": "0", "aria-valuemax": "100" } });
-        track.createDiv({ attr: { style: `width:${clamp(goal.progress ?? 0, 0, 100)}%` } });
+        if (goal.progress !== undefined) {
+          const track = copy.createDiv({ cls: "mym-progress", attr: { role: "progressbar", "aria-valuenow": String(goal.progress), "aria-valuemin": "0", "aria-valuemax": "100" } });
+          track.createDiv({ attr: { style: `width:${clamp(goal.progress, 0, 100)}%` } });
+        }
         const value = card.createDiv({ cls: "mym-focus-value" });
-        value.createEl("strong", { text: goal.progress === undefined ? "—" : `${goal.progress}%` });
+        const dueDays = goal.due ? Math.ceil((new Date(goal.due).getTime() - Date.now()) / 86400000) : undefined;
+        value.createEl("strong", { text: goal.progress !== undefined ? `${goal.progress}%` : dueDays !== undefined && dueDays >= 0 ? `${dueDays} 天` : goal.metric || "进行中" });
         if (goal.due) {
-          const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 86400000);
-          value.createSpan({ text: days >= 0 ? `${days} 天` : "已到期" });
+          value.createSpan({ text: dueDays !== undefined && dueDays >= 0 ? "倒计时" : "已到期" });
         }
         card.addEventListener("click", () => void this.plugin.openGoal(goal));
       });
@@ -274,11 +315,10 @@ class HomeView extends MymView {
     recent.forEach((file) => {
       const card = stream.createEl("button", { cls: "mym-life-card" });
       const visual = card.createDiv({ cls: "mym-life-card-media" });
-      const media = this.plugin.mediaFor(file)[0];
-      if (media?.kind === "image") visual.style.backgroundImage = `url("${this.app.vault.getResourcePath(media.file)}")`;
-      else setIcon(visual, "image");
-      card.createEl("strong", { text: this.plugin.dailyTitle(file) });
-      card.createSpan({ text: dateLabel(file.stat.mtime) });
+      const model = this.plugin.presentation(file);
+      this.mediaThumb(visual, model.media[0]);
+      card.createEl("strong", { text: model.displayTitle });
+      card.createSpan({ text: `${model.date}${model.time ? ` · ${model.time}` : ""}` });
       card.addEventListener("click", () => this.openNote(file));
     });
   }
@@ -296,11 +336,37 @@ class HomeView extends MymView {
     heading.createSpan({ text: subtitle });
   }
 
-  private emptyState(parent: HTMLElement, text: string, path: string): void {
+  private mediaThumb(parent: HTMLElement, media?: MediaItem): void {
+    if (!media) { setIcon(parent, "image"); return; }
+    const source = this.app.vault.getResourcePath(media.file);
+    if (media.kind === "image") { parent.style.backgroundImage = `url("${source}")`; return; }
+    if (media.kind === "video") {
+      const video = parent.createEl("video", { attr: { src: source, preload: "metadata", muted: "", playsinline: "" } });
+      const play = parent.createDiv({ cls: "mym-media-play" });
+      setIcon(play, "play");
+      const duration = parent.createSpan({ cls: "mym-media-duration", text: "视频" });
+      video.addEventListener("loadedmetadata", () => {
+        const total = Math.round(video.duration || 0);
+        duration.setText(total ? `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}` : "视频");
+      }, { once: true });
+      const start = (event: Event): void => {
+        event.stopPropagation();
+        video.controls = true; video.muted = false; play.hide(); duration.hide();
+        void video.play();
+      };
+      video.addEventListener("click", start);
+      play.addEventListener("click", start);
+      return;
+    }
+    setIcon(parent, "audio-lines");
+  }
+
+  private emptyState(parent: HTMLElement): void {
     const box = parent.createDiv({ cls: "mym-empty" });
-    box.createSpan({ text });
-    const button = box.createEl("button", { text: "查看说明" });
-    button.addEventListener("click", () => void this.app.workspace.openLinkText(path, "", false));
+    box.createEl("strong", { text: "当前还没有重点目标" });
+    box.createSpan({ text: "从目标页选择你现在最想投入的事情。" });
+    const button = box.createEl("button", { text: "选择目标" });
+    button.addEventListener("click", () => void this.plugin.push(GOALS_VIEW, {}, "首页"));
   }
 
   private goalCard(parent: HTMLElement, goal: Goal, primary: boolean): void {
@@ -338,19 +404,27 @@ class DetailView extends MymView {
     if (this.contentEl.isConnected) this.renderSafely();
   }
 
-  onOpen(): Promise<void> {
-    this.renderSafely();
-    this.startMobileLifecycle(() => this.renderSafely());
-    return Promise.resolve();
+  async onOpen(): Promise<void> {
+    await this.renderSafely();
+    this.startMobileLifecycle(() => void this.renderSafely());
   }
 
-  private renderSafely(): void {
-    try { this.render(); }
+  private async renderSafely(): Promise<void> {
+    try {
+      const relevant = this.app.vault.getMarkdownFiles().filter((file) => {
+        const type = asText(this.plugin.frontmatter(file).type);
+        return file.path === this.goalPath || type === "goal" || type === "daily" || file.path.startsWith("02 Daily/") || file.path.startsWith("03 Knowledge/");
+      });
+      await this.plugin.hydrate(relevant);
+      this.render();
+    }
     catch (error) { this.renderFailure(error, () => this.renderSafely()); }
   }
 
   private render(): void {
-    const page = this.detailShell("首页");
+    this.contentEl.empty();
+    this.contentEl.addClass("mym-root");
+    const page = this.contentEl.createDiv({ cls: "mym-page mym-detail-page" });
     if (!this.goalPath) {
       const loading = page.createDiv({ cls: "mym-state-card mym-loading", attr: { role: "status", "aria-live": "polite" } });
       loading.createDiv({ cls: "mym-state-orb" });
@@ -370,18 +444,17 @@ class DetailView extends MymView {
       return;
     }
 
-    const statusText: Record<GoalStatus, string> = { focus: "当前重点", active: "进行中", paused: "暂时放下", done: "已经完成" };
     const isCpa = /cpa|考试|审计|会计/i.test(`${goal.title} ${goal.domain || ""}`);
     const isFitness = /健身|身体|训练|体脂/i.test(`${goal.title} ${goal.domain || ""}`);
     const fm = this.plugin.frontmatter(goal.file);
     const heroFile = this.plugin.heroFor(goal.file) || this.plugin.mediaFor(goal.file).find((item) => item.kind === "image")?.file;
     const hero = page.createDiv({ cls: `mym-line-hero${heroFile ? " has-image" : ""}` });
     if (heroFile) hero.style.setProperty("--mym-line-image", `url("${this.app.vault.getResourcePath(heroFile)}")`);
-    const meta = hero.createDiv({ cls: "mym-line-meta" });
-    meta.createSpan({ text: goal.domain || "人生主线" });
-    meta.createSpan({ text: statusText[goal.status] });
+    const back = hero.createEl("button", { cls: "mym-hero-back", attr: { "aria-label": "返回首页" } });
+    setIcon(back, "chevron-left");
+    back.addEventListener("click", () => void this.plugin.back());
     hero.createEl("h1", { text: goal.title });
-    hero.createEl("p", { text: goal.recap || "这一段还没有写下阶段回顾。" });
+    hero.createEl("p", { text: asText(fm.subtitle) || (isFitness ? "更强壮，更有能量的自己" : isCpa ? "一次通过，给未来更多可能" : goal.recap || "持续投入，保持清醒。") });
 
     const tabs = page.createDiv({ cls: "mym-detail-tabs", attr: { role: "tablist", "aria-label": `${goal.title} 页面导航` } });
     const tabItems = isCpa ? [["总览","overview"],["计划","stage"],["记录","records"],["知识","knowledge"],["资料","source"]] : [["总览","overview"],["记录","records"],["数据","data"],["知识","knowledge"],["资源","source"]];
@@ -389,85 +462,12 @@ class DetailView extends MymView {
       const button = tabs.createEl("button", { cls: index === 0 ? "is-active" : "", text: label, attr: { role: "tab" } });
       button.addEventListener("click", () => page.querySelector<HTMLElement>(`[data-mym-section="${target}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
     });
-
-    const overview = page.createDiv({ cls: `mym-overview-card${isCpa ? " is-cpa" : ""}`, attr: { "data-mym-section": "overview" } });
-    const progress = overview.createDiv({ cls: "mym-progress-ring", attr: { style: `--mym-progress:${goal.progress ?? 0}` } });
-    const progressText = progress.createDiv();
-    progressText.createEl("strong", { text: goal.progress === undefined ? "—" : `${goal.progress}%` });
-    progressText.createSpan({ text: "当前进度" });
-    const overviewText = overview.createDiv({ cls: "mym-overview-copy" });
-    overviewText.createSpan({ cls: "mym-kicker", text: isCpa && goal.due ? "距离考试还有" : "当前目标" });
-    if (goal.due) {
-      const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 86400000);
-      overviewText.createEl("h2", { text: days >= 0 ? `${days} 天` : `已过 ${Math.abs(days)} 天` });
-      overviewText.createEl("p", { text: goal.due });
-    } else {
-      overviewText.createEl("h2", { text: goal.metric || "尚未填写当前目标" });
-      overviewText.createEl("p", { text: goal.progress === undefined ? "等待真实数据" : `当前进度 ${goal.progress}%` });
-    }
-
-    const stats = page.createDiv({ cls: "mym-stat-grid", attr: { "data-mym-section": "data" } });
-    if (isFitness) {
-      this.stat(stats, "体重", asText(fm.weight, "未填写"), "Property: weight");
-      this.stat(stats, "体脂率", asText(fm.bodyFat, "未填写"), "Property: bodyFat");
-      this.stat(stats, "力量", asText(fm.strength, "未填写"), "Property: strength");
-    } else if (isCpa) {
-      const subjects = [["会计",fm.accounting],["审计",fm.audit],["财管",fm.finance],["税法",fm.tax]].filter(([,value]) => asText(value));
-      if (subjects.length) subjects.slice(0, 4).forEach(([label,value]) => this.stat(stats, String(label), asText(value), "分科进度"));
-      else this.stat(stats, "学习进度", goal.progress === undefined ? "未填写" : `${goal.progress}%`, "尚未填写分科进度");
-    } else this.stat(stats, "当前进度", goal.progress === undefined ? "持续中" : `${goal.progress}%`, "来自目标属性");
     const recent = this.plugin.relatedDaily(goal.file).slice(0, 7);
     const knowledge = this.plugin.relatedKnowledge(goal.file);
-
-    if (isCpa) {
-      this.heading(page, "本周状态", "7 天");
-      const week = page.createDiv({ cls: "mym-week-strip" });
-      this.plugin.weekStatus(goal.file).forEach((item) => {
-        const day = week.createDiv({ cls: item.active ? "is-active" : "" });
-        day.createSpan({ text: item.label });
-        day.createDiv();
-      });
-      this.heading(page, "当前阶段", "计划");
-      const stage = page.createDiv({ cls: "mym-stage-card", attr: { "data-mym-section": "stage" } });
-      stage.createEl("strong", { text: asText(fm.stage, "还没有填写当前阶段") });
-      stage.createSpan({ text: asText(fm.next, goal.metric || "在 Properties 中填写 stage 与 next") });
-    }
-
-    this.heading(page, "阶段回顾", "Recap");
-    const recap = page.createDiv({ cls: "mym-feature-card" });
-    recap.createDiv({ cls: "mym-feature-mark", text: "“" });
-    recap.createEl("p", { text: goal.recap || "这里还没有阶段回顾。等发生真实变化时，再写下一句。" });
-    recap.createSpan({ text: goal.metric || "等待下一次真实反馈" });
-
     const media = this.plugin.mediaFor(goal.file);
-    this.heading(page, isFitness ? "变化对比" : "变化影像", media.length ? `${media.length} 项` : "照片 / 视频");
-    if (media.length) {
-      const strip = page.createDiv({ cls: "mym-media-strip" });
-      media.slice(0, 5).forEach(({ file, kind }) => {
-        const frame = strip.createDiv({ cls: "mym-media-frame" });
-        const source = this.app.vault.getResourcePath(file);
-        if (kind === "video") frame.createEl("video", { attr: { src: source, controls: "", preload: "metadata", playsinline: "" } });
-        else if (kind === "audio") frame.createEl("audio", { attr: { src: source, controls: "", preload: "none" } });
-        else frame.createEl("img", { attr: { src: source, alt: file.basename, decoding: "async" } });
-        frame.createSpan({ text: file.basename });
-      });
-    } else {
-      const empty = page.createDiv({ cls: "mym-empty mym-empty-soft" });
-      empty.createSpan({ text: "还没有照片或视频。把本地媒体嵌入主线笔记后，它会自然出现在这里。" });
-    }
-
-    this.heading(page, "最近记录", "生活留下的痕迹");
-    const stream = page.createDiv({ cls: "mym-detail-stream", attr: { "data-mym-section": "records" } });
-    if (!recent.length) stream.createDiv({ cls: "mym-empty mym-empty-soft", text: isFitness ? "还没有健身记录。" : isCpa ? "还没有学习记录。" : "这里还没有内容。" });
-    recent.slice(0, 4).forEach((file) => {
-      const row = stream.createEl("button", { cls: "mym-detail-entry" });
-      row.createSpan({ cls: "mym-entry-date", text: dateLabel(file.stat.mtime) });
-      const copy = row.createDiv();
-      copy.createEl("strong", { text: file.basename });
-      copy.createSpan({ text: this.plugin.summary(file) });
-      setIcon(row.createSpan({ cls: "mym-entry-arrow" }), "chevron-right");
-      row.addEventListener("click", () => this.openNote(file));
-    });
+    if (isFitness) this.renderFitness(page, goal, fm, media, recent);
+    else if (isCpa) this.renderCpa(page, goal, fm, recent);
+    else this.renderGeneric(page, goal, fm, media, recent);
 
     this.heading(page, "相关知识", knowledge.length ? `${knowledge.length} 个连接` : "局部图谱");
     const knowledgeCard = page.createEl("button", { cls: "mym-knowledge-entry", attr: { "data-mym-section": "knowledge" } });
@@ -475,18 +475,142 @@ class DetailView extends MymView {
     setIcon(knowledgeIcon, "orbit");
     const knowledgeCopy = knowledgeCard.createDiv();
     knowledgeCopy.createEl("strong", { text: knowledge.length ? "进入沉浸知识图谱" : "从这条主线建立知识连接" });
-    knowledgeCopy.createSpan({ text: knowledge.length ? knowledge.slice(0, 3).map((file) => file.basename).join(" · ") : "在笔记里添加双向链接即可开始" });
+    knowledgeCopy.createSpan({ text: knowledge.length ? knowledge.slice(0, 3).map((file) => this.plugin.presentation(file).displayTitle).join(" · ") : "从相关内容中建立连接" });
     setIcon(knowledgeCard.createSpan({ cls: "mym-entry-arrow" }), "arrow-up-right");
     knowledgeCard.addEventListener("click", () => void this.plugin.push(GRAPH_VIEW, { centerPath: goal.file.path }, goal.title));
 
     const edit = page.createEl("button", { cls: "mym-edit-source", attr: { "data-mym-section": "source" } });
     setIcon(edit.createSpan(), "pencil");
-    edit.createSpan({ text: "编辑这条主线的数据" });
+    edit.createSpan({ text: "编辑主线内容" });
     edit.addEventListener("click", () => this.openNote(goal.file));
 
     const floating = page.createEl("button", { cls: "mym-floating-add", attr: { "aria-label": "快速记录" } });
     setIcon(floating, "plus");
     floating.addEventListener("click", () => new CaptureModal(this.app).open());
+  }
+
+  private renderFitness(page: HTMLElement, goal: Goal, fm: Frontmatter, media: MediaItem[], recent: TFile[]): void {
+    const target = asText(fm.target) || goal.metric || "还没有设置当前目标";
+    const overview = page.createDiv({ cls: "mym-fitness-target", attr: { "data-mym-section": "overview" } });
+    const copy = overview.createDiv();
+    copy.createSpan({ cls: "mym-kicker", text: "当前目标" });
+    copy.createEl("h2", { text: target });
+    copy.createEl("p", { text: goal.due ? `目标：${this.formatDate(goal.due)}` : "给目标设定一个清晰日期" });
+    const ring = overview.createDiv({ cls: "mym-progress-ring", attr: { style: `--mym-progress:${goal.progress ?? 0}` } });
+    const ringText = ring.createDiv();
+    ringText.createEl("strong", { text: goal.progress === undefined ? "—" : `${goal.progress}%` });
+    ringText.createSpan({ text: goal.due ? this.daysText(goal.due) : "进行中" });
+
+    const stats = page.createDiv({ cls: "mym-stat-grid", attr: { "data-mym-section": "data" } });
+    this.stat(stats, "体重", asText(fm.weight, "—"), asText(fm.weightChange, "等待记录"));
+    this.stat(stats, "体脂率", asText(fm.bodyFat, "—"), asText(fm.bodyFatChange, "等待记录"));
+    this.stat(stats, "力量", asText(fm.strength, "—"), asText(fm.strengthChange, "等待记录"));
+
+    this.heading(page, "变化对比", media.filter((item) => item.kind === "image").length >= 2 ? "真实变化" : "等待第二张照片");
+    const images = media.filter((item) => item.kind === "image").slice(0, 2);
+    if (images.length) {
+      const compare = page.createDiv({ cls: "mym-compare" });
+      compare.toggleClass("is-single", images.length === 1);
+      images.forEach((item, index) => {
+        const frame = compare.createEl("button", { cls: "mym-compare-frame", attr: { "aria-label": "全屏查看照片" } });
+        frame.createEl("img", { attr: { src: this.app.vault.getResourcePath(item.file), alt: index ? "当前照片" : "之前照片", decoding: "async" } });
+        frame.createSpan({ text: asText(index ? fm.afterDate : fm.beforeDate, index ? "现在" : "之前") });
+        frame.addEventListener("click", () => new MediaPreviewModal(this.app, item).open());
+      });
+      if (images.length === 2) { const arrow = compare.createDiv({ cls: "mym-compare-arrow" }); setIcon(arrow, "arrow-right"); }
+    } else page.createDiv({ cls: "mym-empty mym-empty-soft", text: "记录两张照片，就能在这里看见真实变化。" });
+
+    this.renderRecent(page, recent, "最近记录", "还没有健身记录。");
+  }
+
+  private renderCpa(page: HTMLElement, goal: Goal, fm: Frontmatter, recent: TFile[]): void {
+    const countdown = page.createDiv({ cls: "mym-cpa-countdown", attr: { "data-mym-section": "overview" } });
+    countdown.createSpan({ cls: "mym-kicker", text: "距离考试还有" });
+    countdown.createEl("h2", { text: goal.due ? this.daysText(goal.due) : "尚未设置" });
+    countdown.createEl("p", { text: goal.due ? this.formatDate(goal.due) : "设置考试日期后显示倒计时" });
+    const calendar = countdown.createDiv({ cls: "mym-countdown-icon" }); setIcon(calendar, "calendar-days");
+
+    const progressCard = page.createDiv({ cls: "mym-study-progress", attr: { "data-mym-section": "data" } });
+    const progressTitle = progressCard.createDiv();
+    progressTitle.createEl("strong", { text: "学习进度" });
+    progressTitle.createSpan({ text: goal.progress === undefined ? "—" : `${goal.progress}%` });
+    const track = progressCard.createDiv({ cls: "mym-progress", attr: { role: "progressbar", "aria-valuenow": String(goal.progress ?? 0), "aria-valuemin": "0", "aria-valuemax": "100" } });
+    track.createDiv({ attr: { style: `width:${goal.progress ?? 0}%` } });
+    const subjects = progressCard.createDiv({ cls: "mym-subject-grid" });
+    [["会计",fm.accounting],["审计",fm.audit],["财管",fm.finance],["税法",fm.tax]].forEach(([label, value]) => {
+      const subject = subjects.createDiv({ cls: "mym-subject" });
+      subject.createSpan({ text: String(label) });
+      subject.createEl("strong", { text: asText(value, "—") });
+    });
+
+    this.heading(page, "本周状态", "7 天");
+    const week = page.createDiv({ cls: "mym-week-strip" });
+    this.plugin.weekStatus(goal.file).forEach((item) => {
+      const day = week.createDiv({ cls: item.active ? "is-active" : "" });
+      day.createDiv();
+      day.createSpan({ text: item.label });
+    });
+    this.heading(page, "当前阶段", "计划");
+    const stage = page.createDiv({ cls: "mym-stage-card", attr: { "data-mym-section": "stage" } });
+    stage.createEl("strong", { text: asText(fm.stage, "还没有设置当前阶段") });
+    stage.createSpan({ text: asText(fm.next, goal.metric || "写下这周最重要的下一步") });
+    this.renderRecent(page, recent, "最近学习", "还没有学习记录。");
+  }
+
+  private renderGeneric(page: HTMLElement, goal: Goal, fm: Frontmatter, media: MediaItem[], recent: TFile[]): void {
+    const overview = page.createDiv({ cls: "mym-fitness-target", attr: { "data-mym-section": "overview" } });
+    const copy = overview.createDiv();
+    copy.createSpan({ cls: "mym-kicker", text: "当前目标" });
+    copy.createEl("h2", { text: goal.metric || asText(fm.target, "继续推进这条主线") });
+    copy.createEl("p", { text: goal.recap || "保持节奏，记录真实变化。" });
+    const ring = overview.createDiv({ cls: "mym-progress-ring", attr: { style: `--mym-progress:${goal.progress ?? 0}` } });
+    const ringText = ring.createDiv(); ringText.createEl("strong", { text: goal.progress === undefined ? "—" : `${goal.progress}%` }); ringText.createSpan({ text: "当前进度" });
+    if (media.length) {
+      this.heading(page, "最近媒体", `${media.length} 项`);
+      this.renderMediaGallery(page, media.slice(0, 4));
+    }
+    this.renderRecent(page, recent, "最近记录", "这里还没有相关记录。");
+  }
+
+  private renderRecent(page: HTMLElement, files: TFile[], title: string, emptyText: string): void {
+    this.heading(page, title, "生活留下的痕迹");
+    const stream = page.createDiv({ cls: "mym-detail-stream", attr: { "data-mym-section": "records" } });
+    if (!files.length) stream.createDiv({ cls: "mym-empty mym-empty-soft", text: emptyText });
+    files.slice(0, 4).forEach((file) => {
+      const model = this.plugin.presentation(file);
+      const row = stream.createEl("button", { cls: "mym-detail-entry" });
+      const visual = row.createDiv({ cls: "mym-entry-media" });
+      const image = model.media.find((item) => item.kind === "image");
+      if (image) visual.style.backgroundImage = `url("${this.app.vault.getResourcePath(image.file)}")`; else setIcon(visual, "notebook-pen");
+      const copy = row.createDiv();
+      copy.createEl("strong", { text: model.displayTitle });
+      copy.createSpan({ text: `${model.date} · ${model.previewText}` });
+      row.addEventListener("click", () => this.openNote(file));
+    });
+  }
+
+  private renderMediaGallery(parent: HTMLElement, media: MediaItem[]): void {
+    const gallery = parent.createDiv({ cls: media.length === 1 ? "mym-media-gallery is-single" : "mym-media-gallery" });
+    media.forEach((item) => {
+      const frame = gallery.createDiv({ cls: `mym-media-tile is-${item.kind}` });
+      const source = this.app.vault.getResourcePath(item.file);
+      if (item.kind === "image") frame.createEl("img", { attr: { src: source, alt: "记录图片", decoding: "async" } });
+      else if (item.kind === "video") {
+        const video = frame.createEl("video", { attr: { src: source, preload: "metadata", playsinline: "", controls: "" } });
+        video.addEventListener("click", (event) => event.stopPropagation());
+      } else frame.createEl("audio", { attr: { src: source, preload: "none", controls: "" } });
+      if (item.kind === "image") frame.addEventListener("click", () => new MediaPreviewModal(this.app, item).open());
+    });
+  }
+
+  private daysText(raw: string): string {
+    const days = Math.ceil((new Date(raw).getTime() - Date.now()) / 86400000);
+    return Number.isFinite(days) ? days >= 0 ? `${days} 天` : `已过 ${Math.abs(days)} 天` : "日期待确认";
+  }
+
+  private formatDate(raw: string): string {
+    const date = new Date(raw);
+    return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(date) : raw;
   }
 
   private heading(parent: HTMLElement, title: string, label: string): void {
@@ -509,14 +633,13 @@ class TimelineView extends MymView {
   getDisplayText(): string { return "人生时间流"; }
   getIcon(): string { return "calendar-days"; }
 
-  onOpen(): Promise<void> {
-    this.renderSafely();
-    this.startMobileLifecycle(() => this.renderSafely());
-    return Promise.resolve();
+  async onOpen(): Promise<void> {
+    await this.renderSafely();
+    this.startMobileLifecycle(() => void this.renderSafely());
   }
 
-  private renderSafely(): void {
-    try { this.render(); }
+  private async renderSafely(): Promise<void> {
+    try { await this.plugin.hydrate(this.plugin.dailyFiles()); this.render(); }
     catch (error) { this.renderFailure(error, () => this.renderSafely()); }
   }
 
@@ -542,26 +665,36 @@ class TimelineView extends MymView {
       return asText(fm.category, asText(fm.kind)).includes(this.category) || (getAllTags(this.app.metadataCache.getFileCache(file) || {}) || []).some((tag) => tag.includes(this.category));
     });
     if (!files.length) {
-      page.createDiv({ cls: "mym-empty", text: "还没有 Daily Note。点右上角开始第一条记录。" });
+      page.createDiv({ cls: "mym-empty", text: "时间线上还没有内容。点右上角记录此刻。" });
       return;
     }
     const timeline = page.createDiv({ cls: "mym-timeline" });
     files.slice(0, 90).forEach((file) => {
       const item = timeline.createEl("button", { cls: "mym-time-item" });
-      item.createDiv({ cls: "mym-time-dot" });
+      const model = this.plugin.presentation(file);
+      const rail = item.createDiv({ cls: "mym-time-rail" });
+      rail.createSpan({ text: model.date });
+      rail.createDiv({ cls: "mym-time-dot" });
       const card = item.createDiv({ cls: "mym-time-card" });
-      const media = this.plugin.mediaFor(file).find((item) => item.kind === "image");
+      const media = model.media.find((entry) => entry.kind === "image" || entry.kind === "video");
       if (media) {
         const image = card.createDiv({ cls: "mym-time-media" });
-        image.style.backgroundImage = `url("${this.app.vault.getResourcePath(media.file)}")`;
+        const source = this.app.vault.getResourcePath(media.file);
+        if (media.kind === "image") image.style.backgroundImage = `url("${source}")`;
+        else {
+          const video = image.createEl("video", { attr: { src: source, preload: "metadata", muted: "", playsinline: "" } });
+          const play = image.createDiv({ cls: "mym-media-play" }); setIcon(play, "play");
+          const start = (event: Event): void => { event.stopPropagation(); video.controls = true; video.muted = false; play.hide(); void video.play(); };
+          video.addEventListener("click", start); play.addEventListener("click", start);
+        }
+      } else {
+        const image = card.createDiv({ cls: "mym-time-media is-placeholder" });
+        setIcon(image, "notebook-pen");
       }
       const body = card.createDiv({ cls: "mym-time-copy" });
-      body.createSpan({ cls: "mym-eyebrow", text: dateLabel(file.stat.mtime) });
-      body.createEl("h2", { text: this.plugin.dailyTitle(file) });
-      body.createEl("p", { text: this.plugin.summary(file) });
-      const cache = this.app.metadataCache.getFileCache(file);
-      const tags = cache ? getAllTags(cache) || [] : [];
-      if (tags.length) body.createSpan({ cls: "mym-tags", text: tags.slice(0, 3).join("  ") });
+      body.createEl("h2", { text: model.displayTitle });
+      body.createEl("p", { text: model.previewText });
+      body.createSpan({ cls: "mym-time-meta", text: `${model.time} · ${model.category}` });
       item.addEventListener("click", () => this.openNote(file));
     });
   }
@@ -572,27 +705,22 @@ class SearchView extends MymView {
   getDisplayText(): string { return "全局搜索"; }
   getIcon(): string { return "search"; }
 
-  onOpen(): Promise<void> {
-    try { this.render(); }
-    catch (error) { this.renderFailure(error, () => this.onOpen()); }
+  async onOpen(): Promise<void> {
+    try { await this.plugin.hydrate(this.app.vault.getMarkdownFiles()); this.render(); }
+    catch (error) { this.renderFailure(error, () => void this.onOpen()); }
     this.startMobileLifecycle(() => {
-      try { this.render(); }
-      catch (error) { this.renderFailure(error, () => this.onOpen()); }
+      void this.plugin.hydrate(this.app.vault.getMarkdownFiles()).then(() => this.render()).catch((error) => this.renderFailure(error, () => void this.onOpen()));
     });
-    return Promise.resolve();
   }
 
   private render(): void {
     const page = this.shell(SEARCH_VIEW);
     page.createEl("h1", { text: "搜索" });
-    page.createEl("p", { text: "标题、路径、标签与属性即时筛选；正文交给 Obsidian 原生搜索。" });
+    page.createEl("p", { text: "搜索目标、知识与人生记录。" });
     const searchBox = page.createDiv({ cls: "mym-search-box" });
     setIcon(searchBox.createSpan(), "search");
     const input = searchBox.createEl("input", { type: "search", placeholder: "搜索目标、知识、标签…", attr: { enterkeyhint: "search" } });
     const results = page.createDiv({ cls: "mym-search-results" });
-    const native = page.createEl("button", { cls: "mym-native-search", text: "打开 Obsidian 全文搜索" });
-    native.addEventListener("click", () => void this.openNativeSearch());
-
     const update = (): void => {
       results.empty();
       const query = input.value.trim().toLocaleLowerCase();
@@ -607,13 +735,14 @@ class SearchView extends MymView {
         const haystack = `${file.basename} ${file.path} ${tags.join(" ")} ${Object.values(fm).map((value) => asText(value)).join(" ")}`.toLocaleLowerCase();
         return haystack.includes(query);
       }).slice(0, 60);
-      if (!matches.length) results.createDiv({ cls: "mym-empty", text: "属性索引中没有结果，可试试全文搜索。" });
+      if (!matches.length) results.createDiv({ cls: "mym-empty", text: "没有找到相关内容，换一个关键词试试。" });
       matches.forEach((file) => {
         const row = results.createEl("button", { cls: "mym-search-result" });
+        const model = this.plugin.presentation(file);
         const body = row.createDiv();
-        body.createEl("strong", { text: file.basename });
-        body.createSpan({ text: this.plugin.summary(file) });
-        row.createSpan({ cls: "mym-search-path", text: file.parent?.name || "Vault" });
+        body.createEl("strong", { text: model.displayTitle });
+        body.createSpan({ text: model.previewText });
+        row.createSpan({ cls: "mym-search-path", text: model.category });
         row.addEventListener("click", () => this.openNote(file));
       });
     };
@@ -622,11 +751,6 @@ class SearchView extends MymView {
     window.setTimeout(() => input.focus(), 60);
   }
 
-  private async openNativeSearch(): Promise<void> {
-    const leaf = this.app.workspace.getLeaf(true);
-    await leaf.setViewState({ type: "search", active: true });
-    await this.app.workspace.revealLeaf(leaf);
-  }
 }
 
 class GoalsView extends MymView {
@@ -636,14 +760,16 @@ class GoalsView extends MymView {
   getDisplayText(): string { return "目标管理"; }
   getIcon(): string { return "list-checks"; }
 
-  onOpen(): Promise<void> {
-    this.renderSafely();
-    this.startMobileLifecycle(() => this.renderSafely());
-    return Promise.resolve();
+  async onOpen(): Promise<void> {
+    await this.renderSafely();
+    this.startMobileLifecycle(() => void this.renderSafely());
   }
 
-  private renderSafely(): void {
-    try { this.render(); }
+  private async renderSafely(): Promise<void> {
+    try {
+      await this.plugin.hydrate(this.app.vault.getMarkdownFiles().filter((file) => asText(this.plugin.frontmatter(file).type) === "goal"));
+      this.render();
+    }
     catch (error) { this.renderFailure(error, () => this.renderSafely()); }
   }
 
@@ -651,17 +777,17 @@ class GoalsView extends MymView {
     const page = this.detailShell("首页");
     const title = page.createDiv({ cls: "mym-title-row" });
     const copy = title.createDiv();
-    copy.createEl("h1", { text: "目标管理" });
+    copy.createEl("h1", { text: "我的目标" });
     copy.createEl("p", { text: "所有目标，统一管理。首页只保留当前重点。" });
     const tabs = page.createDiv({ cls: "mym-filter-chips mym-goal-tabs" });
-    const options: Array<[GoalStatus | "all", string]> = [["focus","进行中"],["done","已完成"],["paused","已暂停"],["all","全部"]];
+    const options: Array<[GoalStatus | "all", string]> = [["focus","进行中"],["done","已完成"],["paused","已暂停"]];
     options.forEach(([value, label]) => {
       const button = tabs.createEl("button", { cls: this.status === value ? "is-active" : "", text: label });
       button.addEventListener("click", () => { this.status = value; this.renderSafely(); });
     });
     const goals = this.plugin.goals().filter((goal) => this.status === "all" || (this.status === "focus" ? ["focus","active"].includes(goal.status) : goal.status === this.status));
     const list = page.createDiv({ cls: "mym-manage-list" });
-    if (!goals.length) list.createDiv({ cls: "mym-empty", text: "这里还没有目标。目标仍然使用普通 Markdown 与 Properties。" });
+    if (!goals.length) list.createDiv({ cls: "mym-empty", text: this.status === "done" ? "还没有完成的目标。" : this.status === "paused" ? "还没有暂停的目标。" : "还没有进行中的目标。点右下角开始一个新目标。" });
     goals.forEach((goal) => {
       const row = list.createEl("button", { cls: "mym-manage-row" });
       const visual = row.createDiv({ cls: "mym-manage-thumb" });
@@ -675,7 +801,12 @@ class GoalsView extends MymView {
       track.createDiv({ attr: { style: `width:${clamp(goal.progress ?? 0,0,100)}%` } });
       const end = row.createDiv({ cls: "mym-manage-end" });
       end.createEl("strong", { text: goal.progress === undefined ? "—" : `${goal.progress}%` });
-      end.createSpan({ text: goal.due || (goal.status === "done" ? "已完成" : goal.status === "paused" ? "已暂停" : "进行中") });
+      end.createSpan({ text: goal.due ? calendarDate(goal.due) : goal.status === "done" ? "已完成" : goal.status === "paused" ? "已暂停" : "进行中" });
+      if (this.status === "focus" && goal.status !== "focus") {
+        const focus = end.createEl("span", { cls: "mym-focus-toggle", attr: { role: "button", tabindex: "0", "aria-label": "设为当前重点" } });
+        setIcon(focus, "target");
+        focus.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.setGoalFocus(goal); });
+      }
       row.addEventListener("click", () => void this.plugin.openGoal(goal));
     });
     const add = page.createEl("button", { cls: "mym-floating-add", attr: { "aria-label": "新建目标" } });
@@ -702,17 +833,18 @@ class ProfileView extends MymView {
 
   private render(): void {
     const page = this.shell(PROFILE_VIEW);
-    const hero = page.createDiv({ cls: "mym-profile-hero" });
+    const home = this.plugin.fileByType("home");
+    const cover = home ? this.plugin.heroFor(home) : undefined;
+    const hero = page.createDiv({ cls: `mym-profile-hero${cover ? " has-image" : ""}` });
+    if (cover) hero.style.setProperty("--mym-profile-image", `url("${this.app.vault.getResourcePath(cover)}")`);
     hero.createDiv({ cls: "mym-profile-avatar", text: "MYM" });
     hero.createEl("h1", { text: "更好的自己" });
-    hero.createEl("p", { text: "持续成长，温柔而坚定。" });
+    hero.createEl("p", { text: "持续成长，保持清醒。" });
     const menu = page.createDiv({ cls: "mym-settings-list" });
-    this.menu(menu, "list-checks", "目标管理", "查看进行中、完成与暂停目标", () => void this.plugin.push(GOALS_VIEW, {}, "我的"));
-    this.menu(menu, "search", "全局搜索", "查找目标、知识、标签与属性", () => void this.plugin.push(SEARCH_VIEW, {}, "我的"));
-    this.menu(menu, "chart-no-axes-column-increasing", "数据统计", `${this.plugin.goals().length} 个目标 · ${this.plugin.dailyFiles().length} 条记录`, () => new Notice("统计只使用 Vault 本地数据"));
-    this.menu(menu, "palette", "主题设置", "跟随 MYM 深色设计系统", () => new Notice("MYM 已使用内置深色主题"));
-    this.menu(menu, "archive-restore", "备份与恢复", "Markdown 与附件由 Vault 管理", () => new Notice("请使用你的 Obsidian 同步或备份方案"));
-    this.menu(menu, "info", "关于 MYM Life", "版本 1.2.0 · 完全离线", () => new Notice("MYM Life 1.2.0"));
+    this.menu(menu, "chart-no-axes-column-increasing", "数据统计", `${this.plugin.goals().length} 个目标 · ${this.plugin.dailyFiles().length} 条记录`, () => new Notice("统计仅在本机完成"));
+    this.menu(menu, "palette", "主题设置", "MYM 浅色主题", () => new Notice("当前使用 MYM 浅色主题"));
+    this.menu(menu, "archive-restore", "备份与恢复", "所有内容都保存在本地", () => new Notice("请继续使用你的同步或备份方案"));
+    this.menu(menu, "info", "关于 MYM Life", "版本 1.2.1 · 完全离线", () => new Notice("MYM Life 1.2.1"));
   }
 
   private menu(parent: HTMLElement, iconName: string, title: string, subtitle: string, action: () => void): void {
@@ -744,6 +876,7 @@ class GraphView extends MymView {
   private domainFilter = "全部";
   private nodeLimit = 30;
   private updatePreview?: () => void;
+  private nodeImages = new Map<string, HTMLImageElement>();
 
   getViewType(): string { return GRAPH_VIEW; }
   getDisplayText(): string { return "知识图谱"; }
@@ -760,14 +893,16 @@ class GraphView extends MymView {
     }
   }
 
-  onOpen(): Promise<void> {
-    try { this.render(); }
-    catch (error) { this.renderFailure(error, () => this.onOpen()); }
+  async onOpen(): Promise<void> {
+    try {
+      await this.plugin.hydrate(this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith("03 Knowledge/") || file.path === this.centerPath));
+      this.render();
+    }
+    catch (error) { this.renderFailure(error, () => void this.onOpen()); }
     this.startMobileLifecycle(() => {
       try { this.build(); }
-      catch (error) { this.renderFailure(error, () => this.onOpen()); }
+      catch (error) { this.renderFailure(error, () => void this.onOpen()); }
     });
-    return Promise.resolve();
   }
 
   onClose(): Promise<void> {
@@ -781,19 +916,15 @@ class GraphView extends MymView {
     const wrap = this.contentEl.createDiv({ cls: "mym-graph-wrap" });
     const top = wrap.createDiv({ cls: "mym-graph-top" });
     const back = top.createEl("button", { cls: "mym-graph-back", attr: { "aria-label": "返回上一页" } });
-    setIcon(back.createSpan(), "chevron-left");
-    back.createSpan({ text: this.plugin.previousLabel() });
+    setIcon(back, "chevron-left");
     back.addEventListener("click", () => void this.plugin.back());
     top.createDiv({ cls: "mym-graph-title", text: "知识空间" });
     const controls = top.createDiv({ cls: "mym-graph-controls" });
-    const more = controls.createEl("button", { attr: { "aria-label": "加载更多节点" } });
-    setIcon(more, "plus");
-    more.addEventListener("click", () => { this.nodeLimit = Math.min(80, this.nodeLimit + 20); this.build(); this.updatePreview?.(); });
-    const reset = controls.createEl("button", { attr: { "aria-label": "重置视图" } });
-    setIcon(reset, "locate-fixed");
-    reset.addEventListener("click", () => { this.scale = 1; this.panX = 0; this.panY = 0; this.draw(); });
+    const search = controls.createEl("button", { attr: { "aria-label": "搜索知识" } });
+    setIcon(search, "search");
+    search.addEventListener("click", () => void this.plugin.push(SEARCH_VIEW, {}, "知识空间"));
     const filters = wrap.createDiv({ cls: "mym-graph-filters" });
-    ["全部", "健身", "CPA", "英语", "工作", "生活"].forEach((domain) => {
+    ["全部", "健身", "CPA", "英语", "生活"].forEach((domain) => {
       const chip = filters.createEl("button", { cls: this.domainFilter === domain ? "is-active" : "", text: domain });
       chip.addEventListener("click", () => {
         this.domainFilter = domain;
@@ -811,21 +942,22 @@ class GraphView extends MymView {
     const summary = preview.createEl("p");
     const previewMeta = preview.createDiv({ cls: "mym-graph-preview-meta" });
     const previewTags = preview.createDiv({ cls: "mym-graph-preview-tags" });
-    const open = preview.createEl("button", { text: "打开笔记" });
+    const open = preview.createEl("button", { text: "进入详情" });
     open.addEventListener("click", () => { const node = this.nodes[this.selected]; if (node) this.openNote(node.file); });
 
     const updatePreview = (): void => {
       const node = this.nodes[this.selected];
       if (!node) { title.setText("暂无知识节点"); summary.setText("在 03 Knowledge 中添加链接笔记。 "); return; }
       label.setText(node.level === 0 ? "中心节点" : node.domain || "关联知识");
-      title.setText(node.file.basename);
-      summary.setText(this.plugin.summary(node.file));
+      const model = this.plugin.presentation(node.file);
+      title.setText(model.displayTitle);
+      summary.setText(model.previewText);
       const relations = this.edges.filter((edge) => edge.from === this.selected || edge.to === this.selected).length;
-      previewMeta.setText(`${relations} 个关联 · ${node.level === 0 ? "当前聚焦" : `${node.level} 层关系`}`);
+      previewMeta.setText(`${relations} 个关联笔记 · ${relations} 个链接`);
       previewTags.empty();
       const cache = this.app.metadataCache.getFileCache(node.file);
       const tags = cache ? getAllTags(cache) || [] : [];
-      (tags.length ? tags : [node.domain]).slice(0, 4).forEach((tag) => previewTags.createSpan({ text: tag }));
+      (tags.length ? tags : [node.domain]).slice(0, 4).forEach((tag) => previewTags.createSpan({ text: tag.startsWith("#") ? tag : `#${tag}` }));
     };
     this.updatePreview = updatePreview;
     this.canvas.addEventListener("pointerdown", (event) => {
@@ -851,9 +983,13 @@ class GraphView extends MymView {
     });
     this.canvas.addEventListener("pointerup", (event) => {
       if (!this.pointer) return;
-      if (!this.pointer.moved || this.dragNode >= 0) {
+      if (!this.pointer.moved) {
         const index = this.hitTest(event.clientX, event.clientY);
-        if (index >= 0) { this.selected = index; updatePreview(); this.draw(); }
+        if (index >= 0) {
+          this.centerPath = this.nodes[index].file.path;
+          this.scale = 1; this.panX = 0; this.panY = 0;
+          this.build(); updatePreview();
+        }
       }
       this.pointer = undefined;
       this.dragNode = -1;
@@ -930,7 +1066,20 @@ class GraphView extends MymView {
     this.nodes = nodes;
     this.edges = edges;
     this.selected = 0;
+    this.loadNodeImages();
     this.resizeCanvas();
+  }
+
+  private loadNodeImages(): void {
+    this.nodes.forEach((node) => {
+      const media = this.plugin.heroFor(node.file) || this.plugin.mediaFor(node.file).find((item) => item.kind === "image")?.file;
+      if (!media || this.nodeImages.has(node.file.path)) return;
+      const image = new Image();
+      image.decoding = "async";
+      image.onload = () => this.draw();
+      image.src = this.app.vault.getResourcePath(media);
+      this.nodeImages.set(node.file.path, image);
+    });
   }
 
   private matchesDomain(file: TFile): boolean {
@@ -989,17 +1138,31 @@ class GraphView extends MymView {
     const labels: Array<{ left: number; right: number; top: number; bottom: number }> = [];
     this.nodes.forEach((node, index) => {
       const point = this.screen(node); const active = adjacent.has(index); const selected = index === this.selected;
-      const radius = (selected ? 13 : node.level === 0 ? 11 : node.level === 1 ? 7 : 4.5) * Math.sqrt(this.scale);
+      const radius = (selected ? 34 : node.level === 0 ? 30 : node.level === 1 ? 21 : 12) * Math.sqrt(this.scale);
       ctx.beginPath(); ctx.arc(point.x, point.y, radius + (selected ? 6 : 0), 0, Math.PI * 2);
-      ctx.fillStyle = selected ? "rgba(108, 230, 171, .16)" : "transparent"; ctx.fill();
+      ctx.fillStyle = selected ? "rgba(108, 230, 171, .24)" : "transparent"; ctx.fill();
       ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
       const palette = ["#77dfaa", "#7fbead", "#8ea5d9", "#d9b987"];
       ctx.fillStyle = active ? palette[Math.abs(this.hash(node.domain)) % palette.length] : "#34534b"; ctx.fill();
+      const image = this.nodeImages.get(node.file.path);
+      if (image?.complete && image.naturalWidth) {
+        ctx.save();
+        ctx.beginPath(); ctx.arc(point.x, point.y, Math.max(1, radius - 2), 0, Math.PI * 2); ctx.clip();
+        const side = Math.min(image.naturalWidth, image.naturalHeight);
+        const sx = (image.naturalWidth - side) / 2; const sy = (image.naturalHeight - side) / 2;
+        ctx.drawImage(image, sx, sy, side, side, point.x - radius, point.y - radius, radius * 2, radius * 2);
+        ctx.restore();
+      }
+      if (selected || node.level === 0) {
+        ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(196,255,221,.88)"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
+      }
       if (node.level < 2 || selected || active) {
         ctx.font = `${selected ? 600 : 500} ${selected ? 14 : 12}px -apple-system, BlinkMacSystemFont, sans-serif`;
         ctx.textAlign = "center"; ctx.textBaseline = "top";
         ctx.fillStyle = active ? "rgba(239,250,245,.94)" : "rgba(197,215,208,.43)";
-        const label = node.file.basename.length > 12 ? `${node.file.basename.slice(0, 11)}…` : node.file.basename;
+        const display = this.plugin.presentation(node.file).displayTitle;
+        const label = display.length > 12 ? `${display.slice(0, 11)}…` : display;
         const width = ctx.measureText(label).width;
         const top = point.y + radius + 7;
         const box = { left: point.x - width / 2 - 3, right: point.x + width / 2 + 3, top, bottom: top + (selected ? 18 : 15) };
@@ -1029,6 +1192,20 @@ class GraphView extends MymView {
   }
 }
 
+class MediaPreviewModal extends Modal {
+  constructor(app: App, private readonly media: MediaItem) { super(app); }
+
+  onOpen(): void {
+    this.modalEl.addClass("mym-media-preview-modal");
+    const source = this.app.vault.getResourcePath(this.media.file);
+    if (this.media.kind === "image") this.contentEl.createEl("img", { attr: { src: source, alt: "本地图片预览" } });
+    else if (this.media.kind === "video") this.contentEl.createEl("video", { attr: { src: source, controls: "", autoplay: "", playsinline: "", preload: "metadata" } });
+    else this.contentEl.createEl("audio", { attr: { src: source, controls: "", autoplay: "", preload: "metadata" } });
+  }
+
+  onClose(): void { this.contentEl.empty(); }
+}
+
 class CaptureModal extends Modal {
   private moods = new Set<string>();
   private category = "日记";
@@ -1047,33 +1224,37 @@ class CaptureModal extends Modal {
     });
     const input = this.contentEl.createEl("textarea", { placeholder: "此刻的想法…", attr: { rows: "7", enterkeyhint: "done" } });
     const tools = this.contentEl.createDiv({ cls: "mym-capture-tools" });
-    const fileInput = tools.createEl("input", { type: "file", attr: { multiple: "", accept: "image/*,video/*,audio/*" } });
+    const fileInput = tools.createEl("input", { type: "file", attr: { multiple: "", accept: "image/*" } });
     fileInput.hidden = true;
-    const addMedia = (iconName: string, label: string, accept: string): void => {
+    const addMedia = (iconName: string, label: string, accept: string, capture = false): void => {
       const button = tools.createEl("button", { attr: { "aria-label": label, title: label } });
       setIcon(button, iconName);
-      button.addEventListener("click", () => { fileInput.accept = accept; fileInput.click(); });
+      button.createSpan({ text: label });
+      button.addEventListener("click", () => {
+        fileInput.accept = accept;
+        if (capture) fileInput.setAttribute("capture", ""); else fileInput.removeAttribute("capture");
+        fileInput.click();
+      });
     };
-    addMedia("image", "添加图片", "image/*");
-    addMedia("video", "添加视频", "video/*");
-    addMedia("mic", "添加音频", "audio/*");
-    const link = tools.createEl("button", { attr: { "aria-label": "添加链接", title: "添加链接" } });
-    setIcon(link, "link");
-    const linkInput = this.contentEl.createEl("input", { type: "url", cls: "mym-capture-link", placeholder: "粘贴链接（可选）" });
-    linkInput.hidden = true;
-    link.addEventListener("click", () => { linkInput.hidden = !linkInput.hidden; if (!linkInput.hidden) linkInput.focus(); });
+    addMedia("image", "图片", "image/*");
+    addMedia("mic", "录音", "audio/*", true);
+    addMedia("paperclip", "附件", "*/*");
+    const moodToggle = tools.createEl("button", { attr: { "aria-label": "选择情绪", title: "情绪" } });
+    setIcon(moodToggle, "smile");
+    moodToggle.createSpan({ text: "情绪" });
     const attachmentState = tools.createSpan({ cls: "mym-attachment-state" });
     fileInput.addEventListener("change", () => {
       this.pendingFiles = Array.from(fileInput.files || []);
       attachmentState.setText(this.pendingFiles.length ? `${this.pendingFiles.length} 个附件` : "");
     });
-    this.contentEl.createDiv({ cls: "mym-field-label", text: "情绪" });
     const moodRow = this.contentEl.createDiv({ cls: "mym-moods" });
-    ["开心", "平静", "焦虑", "低落", "愤怒", "疲惫", "期待"].forEach((mood) => {
+    moodRow.hidden = true;
+    moodToggle.addEventListener("click", () => { moodRow.hidden = !moodRow.hidden; });
+    ["很差", "低落", "平静", "愉快", "很好"].forEach((mood) => {
       const button = moodRow.createEl("button", { text: mood });
       button.addEventListener("click", () => {
-        if (this.moods.has(mood)) this.moods.delete(mood); else this.moods.add(mood);
-        button.toggleClass("is-active", this.moods.has(mood));
+        this.moods.clear(); this.moods.add(mood);
+        moodRow.querySelectorAll("button").forEach((item) => item.toggleClass("is-active", item === button));
       });
     });
     const actions = this.contentEl.createDiv({ cls: "mym-modal-actions" });
@@ -1101,9 +1282,8 @@ class CaptureModal extends Modal {
             attachmentLinks.push(`![[${mediaPath}]]`);
           }
         }
-        const linkText = linkInput.value.trim() ? `\n链接：${linkInput.value.trim()}` : "";
         const attachmentText = attachmentLinks.length ? `\n\n${attachmentLinks.join("\n")}` : "";
-        const block = `\n\n## ${stamp} · ${this.category}\n\n${text}\n#类型/${this.category}${moodText}${linkText}${attachmentText}\n`;
+        const block = `\n\n## ${stamp} · ${this.category}\n\n${text}\n#类型/${this.category}${moodText}${attachmentText}\n`;
         if (existing instanceof TFile) await this.app.vault.process(existing, (content) => content + block);
         else {
           if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
@@ -1120,6 +1300,7 @@ class CaptureModal extends Modal {
 
 export default class MymLifePlugin extends Plugin {
   private navStack: NavEntry[] = [];
+  private contentCache = new Map<string, string>();
 
   async onload(): Promise<void> {
     this.registerView(HOME_VIEW, (leaf) => new HomeView(leaf, this));
@@ -1133,12 +1314,65 @@ export default class MymLifePlugin extends Plugin {
     this.addCommand({ id: "open-life-home", name: "打开人生首页", callback: () => void this.openRoot(HOME_VIEW) });
     this.addCommand({ id: "quick-capture", name: "快速记录到今天", callback: () => new CaptureModal(this.app).open() });
     this.addCommand({ id: "open-life-graph", name: "打开局部知识图谱", callback: () => void this.openRoot(GRAPH_VIEW) });
+    this.registerEvent(this.app.vault.on("modify", (file) => {
+      if (file instanceof TFile) this.contentCache.delete(file.path);
+    }));
+    this.registerEvent(this.app.vault.on("delete", (file) => this.contentCache.delete(file.path)));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      this.contentCache.delete(oldPath);
+      this.contentCache.delete(file.path);
+    }));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncHostChrome()));
     this.app.workspace.onLayoutReady(() => {
       void this.openRoot(HOME_VIEW).catch((error) => {
         console.error("[MYM Life] failed to activate home view", error);
         new Notice("MYM 人生首页加载失败，请再次点击叶子图标");
       });
     });
+  }
+
+  enterMym(_view: MymView): void {
+    this.setHostChrome(true);
+  }
+
+  leaveMym(_view: MymView): void {
+    window.setTimeout(() => this.syncHostChrome(), 0);
+  }
+
+  private syncHostChrome(): void {
+    const active = this.app.workspace.getMostRecentLeaf();
+    this.setHostChrome(Boolean(active && MYM_VIEWS.includes(active.view.getViewType() as typeof MYM_VIEWS[number])));
+  }
+
+  private setHostChrome(active: boolean): void {
+    document.body.toggleClass("mym-life-active", active);
+    document.body.toggleClass("mym-life-mobile", active && Platform.isMobile);
+  }
+
+  hostBottomInset(root: HTMLElement): number {
+    const viewport = window.visualViewport;
+    const visibleBottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
+    const selectors = [".mobile-toolbar", ".mobile-navbar", ".workspace-drawer-vault-switcher", ".workspace-tab-header-container"];
+    let overlap = 0;
+    selectors.forEach((selector) => {
+      document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
+        if (element.closest(".mym-root") || getComputedStyle(element).display === "none") return;
+        const rect = element.getBoundingClientRect();
+        if (rect.height <= 0 || rect.top < visibleBottom * 0.55 || rect.top >= visibleBottom) return;
+        overlap = Math.max(overlap, Math.max(0, visibleBottom - rect.top));
+      });
+    });
+    const host = root.parentElement?.getBoundingClientRect();
+    if (host && host.bottom < visibleBottom) overlap = Math.max(overlap, visibleBottom - host.bottom);
+    return Math.round(overlap);
+  }
+
+  async hydrate(files: TFile[]): Promise<void> {
+    await Promise.all(files.map(async (file) => {
+      if (this.contentCache.has(file.path)) return;
+      try { this.contentCache.set(file.path, await this.app.vault.cachedRead(file)); }
+      catch { this.contentCache.set(file.path, ""); }
+    }));
   }
 
   private currentMymLeaf(): WorkspaceLeaf | undefined {
@@ -1230,7 +1464,7 @@ export default class MymLifePlugin extends Plugin {
       const rawProgress = Number(fm.progress);
       return {
         file,
-        title: asText(fm.title, file.basename),
+        title: this.presentation(file).displayTitle,
         status: statusOf(fm.status),
         progress: Number.isFinite(rawProgress) ? clamp(rawProgress, 0, 100) : undefined,
         metric: asText(fm.metric) || undefined,
@@ -1266,12 +1500,12 @@ export default class MymLifePlugin extends Plugin {
     return Array.from(found.values()).filter((target) => target.path.startsWith("03 Knowledge/")).slice(0, 24);
   }
 
-  mediaFor(file: TFile): Array<{ file: TFile; kind: "image" | "video" | "audio" }> {
+  mediaFor(file: TFile): MediaItem[] {
     const image = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"]);
     const video = new Set(["mp4", "mov", "m4v", "webm"]);
     const audio = new Set(["m4a", "mp3", "wav", "aac", "ogg"]);
     const cache = this.app.metadataCache.getFileCache(file);
-    const media: Array<{ file: TFile; kind: "image" | "video" | "audio" }> = [];
+    const media: MediaItem[] = [];
     (cache?.embeds || []).map((embed) => this.app.metadataCache.getFirstLinkpathDest(embed.link, file.path)).filter((target): target is TFile => target instanceof TFile).forEach((target) => {
       const extension = target.extension.toLowerCase();
       if (image.has(extension)) media.push({ file: target, kind: "image" });
@@ -1286,10 +1520,7 @@ export default class MymLifePlugin extends Plugin {
   }
 
   dailyTitle(file: TFile): string {
-    const title = asText(this.frontmatter(file).title);
-    if (title) return title;
-    const summary = this.summary(file);
-    return summary === file.path ? file.basename : summary.length > 16 ? `${summary.slice(0, 16)}…` : summary;
+    return this.presentation(file).displayTitle;
   }
 
   relatedDaily(goal: TFile): TFile[] {
@@ -1317,12 +1548,68 @@ export default class MymLifePlugin extends Plugin {
     await this.app.workspace.getLeaf("tab").openFile(file);
   }
 
+  async setGoalFocus(goal: Goal): Promise<void> {
+    await this.app.fileManager.processFrontMatter(goal.file, (frontmatter) => { frontmatter.status = "focus"; });
+    new Notice(`${goal.title} 已设为当前重点`);
+  }
+
   summary(file: TFile): string {
+    return this.presentation(file).previewText;
+  }
+
+  presentation(file: TFile): PresentationModel {
     const fm = this.frontmatter(file);
-    return asText(fm.recap) || asText(fm.summary) || asText(fm.metric) || file.path;
+    const raw = this.contentCache.get(file.path) || "";
+    const body = raw.replace(/^---\s*[\s\S]*?\n---\s*/m, "");
+    const clean = (value: string): string => value
+      .replace(/!\[\[[^\]]+\]\]/g, "")
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target: string, alias?: string) => alias || target)
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/`{1,3}[^`]*`{1,3}/g, "")
+      .replace(/^\s*(?:#{1,6}|>|[-*+] |\d+\. )\s*/g, "")
+      .replace(/(^|\s)#[^\s#]+/g, " ")
+      .replace(/[~*_]{1,3}/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const isTechnical = (line: string): boolean => !line || /^\d{4}-\d{2}-\d{2}$/.test(line) || /^\d{1,2}:\d{2}\s*[·\-]/.test(line) || /^(日记|灵感|想法|情绪|待办)$/.test(line);
+    const meaningful = body.split(/\r?\n/).map((line) => clean(line)).filter((line) => !isTechnical(line));
+    const h1 = Array.from(body.matchAll(/^#\s+(.+)$/gm)).map((match) => clean(match[1])).find((line) => !isTechnical(line));
+    const compress = (value: string, max: number): string => {
+      const natural = value.replace(/^(今天|今日|刚刚)[，,:：\s]*/u, "").replace(/(感觉|终于|其实|真的)/g, "").trim();
+      const sentence = natural.split(/[。！？!?]/)[0] || natural;
+      return sentence.length > max ? `${sentence.slice(0, max).trim()}…` : sentence;
+    };
+    const fallbackName = file.basename.replace(/^\d{4}-\d{2}-\d{2}[-_\s]*/, "").replace(/[-_]/g, " ").trim();
+    const titleSource = asText(fm.title) || h1 || meaningful[0] || fallbackName || "未命名记录";
+    const displayTitle = compress(titleSource, 22);
+    const previewSource = asText(fm.summary) || asText(fm.recap) || meaningful.find((line) => line !== h1 && line !== displayTitle) || meaningful[0] || asText(fm.metric) || "还没有写下摘要。";
+    const previewText = compress(previewSource, 58);
+    const rawDate = asText(fm.date);
+    const parsed = rawDate ? new Date(rawDate).getTime() : Number.NaN;
+    const epoch = Number.isFinite(parsed) ? parsed : file.stat.mtime;
+    const capturedTime = body.match(/^##\s+(\d{1,2}:\d{2})/m)?.[1];
+    const tagType = body.match(/#类型\/([^\s#]+)/)?.[1];
+    const isDaily = asText(fm.type) === "daily" || file.path.startsWith("02 Daily/");
+    const linkedGoal = isDaily ? Object.keys(this.app.metadataCache.resolvedLinks[file.path] || {}).map((path) => this.app.vault.getAbstractFileByPath(path)).find((target): target is TFile => target instanceof TFile && asText(this.frontmatter(target).type) === "goal") : undefined;
+    const category = asText(fm.category) || asText(fm.kind) || (linkedGoal ? asText(this.frontmatter(linkedGoal).domain) || this.presentation(linkedGoal).displayTitle : "") || tagType || "生活";
+    const subtitle = asText(fm.subtitle) || asText(fm.metric) || asText(fm.recap) || previewText;
+    return {
+      displayTitle,
+      subtitle: compress(subtitle, 42),
+      date: dateLabel(epoch),
+      time: capturedTime || timeLabel(file.stat.mtime),
+      previewText,
+      media: this.mediaFor(file),
+      category,
+      metric: asText(fm.metric)
+    };
   }
 
   onunload(): void {
+    document.body.removeClass("mym-life-active", "mym-life-mobile");
+    document.body.style.removeProperty("--mym-vv-height");
+    document.body.style.removeProperty("--mym-vv-top");
     MYM_VIEWS.forEach((type) => this.app.workspace.detachLeavesOfType(type));
   }
 }

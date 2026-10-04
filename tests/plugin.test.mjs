@@ -10,7 +10,7 @@ const read = (name) => fs.readFileSync(path.join(root, name), "utf8");
 test("release versions and required assets match", () => {
   const manifest = JSON.parse(read("manifest.json"));
   const pkg = JSON.parse(read("package.json"));
-  assert.equal(manifest.version, "1.2.0");
+  assert.equal(manifest.version, "1.2.1");
   assert.equal(pkg.version, manifest.version);
   assert.equal(manifest.isDesktopOnly, false);
   for (const file of ["main.js", "manifest.json", "styles.css"]) assert.ok(fs.statSync(path.join(root, file)).size > 0, `${file} missing`);
@@ -44,6 +44,8 @@ test("mobile layout guards are present", () => {
   assert.match(css, /100dvh/);
   assert.match(css, /is-keyboard-open/);
   assert.match(source, /visualViewport/);
+  assert.match(source, /hostBottomInset/);
+  assert.match(source, /mym-life-active/);
   assert.match(source, /scrollIntoView/);
 });
 
@@ -61,21 +63,26 @@ test("mobile app navigation and detail view stay inside MYM", () => {
   assert.match(source, /class CaptureModal extends Modal/);
 });
 
-test("knowledge graph is local, bounded, and progressively loaded", () => {
+test("knowledge graph is local, bounded, image-aware, and refocusable", () => {
   const source = read("src/main.ts");
   assert.match(source, /private nodeLimit = 30/);
-  assert.match(source, /Math\.min\(80, this\.nodeLimit \+ 20\)/);
   assert.match(source, /const overlaps = labels\.some/);
   assert.match(source, /metadataCache\.resolvedLinks/);
   assert.match(source, /this\.dragNode/);
+  assert.match(source, /loadNodeImages/);
+  assert.match(source, /this\.centerPath = this\.nodes\[index\]\.file\.path/);
 });
 
-test("1.2 design system follows the supplied dark mobile construction", () => {
+test("1.2.1 follows the supplied page construction with the requested light default", () => {
   const css = read("styles.css");
   const source = read("src/main.ts");
-  for (const token of ["#101513", "#171d1a", "#1d2420", "#86d7a4"]) assert.ok(css.toLowerCase().includes(token));
+  for (const token of ["#f7f7f3", "#fff", "#171a18", "#727972", "#347a52", "#e7f0e8", "#e2e6e1"]) assert.ok(css.toLowerCase().includes(token));
   for (const cls of ["mym-home-hero", "mym-focus-row", "mym-life-strip", "mym-detail-tabs", "mym-week-strip", "mym-manage-list", "mym-profile-hero", "mym-graph-filters", "mym-capture-categories"])
     assert.ok(css.includes(`.${cls}`) || source.includes(cls), `missing ${cls}`);
+  assert.match(source, /interface PresentationModel/);
+  assert.match(source, /displayTitle/);
+  assert.match(source, /previewText/);
+  assert.doesNotMatch(source, /把目标的 status 改为 focus/);
 });
 
 test("repository ignore rules block vaults, notes, media, and Obsidian state", () => {

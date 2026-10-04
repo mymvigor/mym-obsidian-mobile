@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1
+
+- Rebuilt Home, Fitness, CPA, Timeline, Goals, Capture, and Profile against the supplied phone layout with a light MYM-owned visual system.
+- Added a presentation model that derives human-readable titles, summaries, dates, categories, metrics, and media without exposing filenames, paths, YAML, or internal fields.
+- Added inline local video previews and playback, two-column image galleries, before/after comparison, and full-screen local media viewing.
+- Reworked the knowledge space around image-centered radial nodes, five domain filters, click-to-refocus, and a structured knowledge preview card.
+- Added MYM-only host chrome suppression, measured host-bottom fallback spacing, Visual Viewport sizing, keyboard-aware navigation hiding, and safe-area content clearance.
+- Rebuilt quick capture with the specified five record types and four tools: image, recording, attachment, and mood.
+
 ## 1.2.0
 
 - Rebuilt the entire application in the supplied dark, restrained, masculine mobile visual system.
