@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0
+
+- Rebuilt the entire application in the supplied dark, restrained, masculine mobile visual system.
+- Added media-first Home, compact focus rows, recent-life cards, fitness and CPA-specific detail layouts.
+- Added five-item mobile navigation, Goals, Search, Knowledge, Timeline, Profile, and Settings experiences.
+- Rebuilt quick capture as a bottom sheet with categories and local image, video, and audio attachments.
+- Upgraded Knowledge Space with domain filters, draggable nodes, progressive loading up to 80 nodes, tags, and relation counts.
+- Preserved offline-only Obsidian APIs, readable empty/error states, Visual Viewport keyboard handling, and local media playback.
+
 ## 1.1.0
 
 - Rebuilt the mobile experience around MYM custom App Views and a three-level navigation stack.

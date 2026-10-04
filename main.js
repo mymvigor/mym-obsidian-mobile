@@ -29,7 +29,9 @@ var DETAIL_VIEW = "mym-life-detail";
 var TIMELINE_VIEW = "mym-life-timeline";
 var GRAPH_VIEW = "mym-life-graph";
 var SEARCH_VIEW = "mym-life-search";
-var MYM_VIEWS = [HOME_VIEW, DETAIL_VIEW, TIMELINE_VIEW, GRAPH_VIEW, SEARCH_VIEW];
+var GOALS_VIEW = "mym-life-goals";
+var PROFILE_VIEW = "mym-life-profile";
+var MYM_VIEWS = [HOME_VIEW, DETAIL_VIEW, TIMELINE_VIEW, GRAPH_VIEW, SEARCH_VIEW, GOALS_VIEW, PROFILE_VIEW];
 function asText(value, fallback = "") {
   if (typeof value === "string" || typeof value === "number") return String(value);
   return fallback;
@@ -115,16 +117,26 @@ var MymView = class extends import_obsidian.ItemView {
     this.contentEl.empty();
     this.contentEl.addClass("mym-root");
     const page = this.contentEl.createDiv({ cls: "mym-page" });
-    const dock = this.contentEl.createDiv({ cls: "mym-dock", attr: { "aria-label": "\u4E3B\u5BFC\u822A" } });
-    [
-      ["home", "\u9996\u9875", HOME_VIEW],
-      ["calendar-days", "\u65F6\u95F4", TIMELINE_VIEW],
-      ["search", "\u641C\u7D22", SEARCH_VIEW]
-    ].forEach(([icon, label, type]) => {
-      const button = dock.createEl("button", { cls: type === active ? "is-active" : "" });
-      (0, import_obsidian.setIcon)(button.createSpan(), icon);
-      button.createSpan({ text: label });
-      button.addEventListener("click", () => void this.plugin.openRoot(type));
+    const dock = this.contentEl.createDiv({ cls: "mym-dock", attr: { role: "navigation", "aria-label": "\u4E3B\u5BFC\u822A" } });
+    const items = [
+      { icon: "home", label: "\u9996\u9875", type: HOME_VIEW },
+      { icon: "clock-3", label: "\u65F6\u95F4", type: TIMELINE_VIEW },
+      { icon: "plus", label: "\u8BB0\u5F55", capture: true },
+      { icon: "book-open", label: "\u77E5\u8BC6", type: GRAPH_VIEW },
+      { icon: "user-round", label: "\u6211\u7684", type: PROFILE_VIEW }
+    ];
+    items.forEach((item) => {
+      const button = dock.createEl("button", {
+        cls: `${item.type === active ? "is-active" : ""}${item.capture ? " mym-dock-capture" : ""}`.trim(),
+        attr: { "aria-label": item.label, ...item.type === active ? { "aria-current": "page" } : {} }
+      });
+      (0, import_obsidian.setIcon)(button.createSpan(), item.icon);
+      button.createSpan({ text: item.label });
+      if (item.capture) button.addEventListener("click", () => new CaptureModal(this.app).open());
+      else if (item.type) {
+        const type = item.type;
+        button.addEventListener("click", () => void this.plugin.openRoot(type));
+      }
     });
     return page;
   }
@@ -182,60 +194,61 @@ var HomeView = class extends MymView {
   }
   render() {
     const page = this.shell(HOME_VIEW);
-    const hour = (/* @__PURE__ */ new Date()).getHours();
-    const greeting = hour < 6 ? "\u591C\u6DF1\u4E86" : hour < 12 ? "\u65E9\u4E0A\u597D" : hour < 18 ? "\u4E0B\u5348\u597D" : "\u665A\u4E0A\u597D";
-    const hero = page.createDiv({ cls: "mym-hero" });
-    hero.createDiv({ cls: "mym-eyebrow", text: dateLabel(Date.now()) });
-    hero.createEl("h1", { text: greeting });
-    hero.createEl("p", { text: "\u770B\u6E05\u6B63\u5728\u53D1\u751F\u7684\u53D8\u5316\uFF0C\u7136\u540E\u7EE7\u7EED\u751F\u6D3B\u3002" });
-    const quick = page.createDiv({ cls: "mym-quick" });
-    this.quickButton(quick, "plus", "\u8BB0\u5F55", () => new CaptureModal(this.app).open());
-    this.quickButton(quick, "calendar-check", "\u4ECA\u5929", () => void this.plugin.openToday());
-    this.quickButton(quick, "orbit", "\u56FE\u8C31", () => void this.plugin.push(GRAPH_VIEW, {}, "\u9996\u9875"));
     const goals = this.plugin.goals();
-    this.sectionHeading(page, "\u5F53\u524D\u91CD\u70B9", "\u53EA\u653E\u771F\u6B63\u6295\u5165\u7684\u4E8B");
+    const homeFile = this.plugin.fileByType("home");
+    const homeFrontmatter = homeFile ? this.plugin.frontmatter(homeFile) : {};
+    const heroFile = homeFile ? this.plugin.heroFor(homeFile) : void 0;
+    const hero = page.createDiv({ cls: `mym-home-hero${heroFile ? " has-image" : ""}` });
+    if (heroFile) hero.style.setProperty("--mym-hero-image", `url("${this.app.vault.getResourcePath(heroFile)}")`);
+    const heroTop = hero.createDiv({ cls: "mym-home-hero-top" });
+    heroTop.createSpan({ text: dateLabel(Date.now()) });
+    const heroAction = heroTop.createEl("button", { attr: { "aria-label": "\u6253\u5F00\u641C\u7D22" } });
+    (0, import_obsidian.setIcon)(heroAction, "search");
+    heroAction.addEventListener("click", () => void this.plugin.push(SEARCH_VIEW, {}, "\u9996\u9875"));
+    const heroCopy = hero.createDiv({ cls: "mym-home-hero-copy" });
+    heroCopy.createEl("h1", { text: asText(homeFrontmatter.headline, "\u66F4\u81EA\u5F8B\n\u66F4\u5F3A\u58EE\n\u66F4\u81EA\u7531") });
+    heroCopy.createEl("p", { text: asText(homeFrontmatter.motto, "\u628A\u6CE8\u610F\u529B\u653E\u5728\u771F\u6B63\u91CD\u8981\u7684\u4E8B\u60C5\u4E0A\u3002") });
+    const heading = page.createDiv({ cls: "mym-section-heading mym-section-action" });
+    heading.createEl("h2", { text: "\u5F53\u524D\u91CD\u70B9" });
+    const allGoals = heading.createEl("button", { text: "\u5168\u90E8" });
+    allGoals.addEventListener("click", () => void this.plugin.push(GOALS_VIEW, {}, "\u9996\u9875"));
     const focus = goals.filter((goal) => goal.status === "focus").slice(0, 5);
     if (focus.length === 0) this.emptyState(page, "\u628A\u76EE\u6807\u7684 status \u6539\u4E3A focus\uFF0C\u5B83\u5C31\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002", "04 Goals/\u76EE\u6807\u4F7F\u7528\u8BF4\u660E.md");
     else {
-      const list = page.createDiv({ cls: "mym-focus-list" });
-      focus.forEach((goal, index) => this.goalCard(list, goal, index === 0));
-    }
-    const recapRank = { focus: 0, active: 1, paused: 2, done: 3 };
-    const recaps = goals.filter((goal) => goal.recap || goal.metric).sort((a, b) => recapRank[a.status] - recapRank[b.status] || b.updated - a.updated).slice(0, 4);
-    this.sectionHeading(page, "\u6700\u8FD1\u53D8\u5316", "\u53EA\u53CD\u9988\u771F\u5B9E\u72B6\u6001\u4E0E\u6210\u679C");
-    const recapGrid = page.createDiv({ cls: "mym-recap-grid" });
-    recaps.forEach((goal) => {
-      const card = recapGrid.createEl("button", { cls: "mym-recap" });
-      card.createSpan({ cls: "mym-recap-domain", text: goal.domain || goal.title });
-      card.createEl("strong", { text: goal.metric || (goal.progress === void 0 ? "\u72B6\u6001\u66F4\u65B0" : `${goal.progress}%`) });
-      card.createSpan({ text: goal.recap || "\u8FDB\u5EA6\u5DF2\u66F4\u65B0" });
-      card.addEventListener("click", () => void this.plugin.openGoal(goal));
-    });
-    if (recaps.length === 0) recapGrid.createDiv({ cls: "mym-muted", text: "\u5728\u76EE\u6807\u5C5E\u6027\u4E2D\u586B\u5199 metric \u6216 recap \u540E\u663E\u793A\u3002" });
-    const groups = [["active", "\u5176\u4ED6\u8FDB\u884C\u4E2D"], ["paused", "\u6682\u505C / \u7B49\u5F85"], ["done", "\u5DF2\u5B8C\u6210 / \u5DF2\u8D70\u8FC7"]];
-    groups.forEach(([status, label]) => {
-      const items = goals.filter((goal) => goal.status === status);
-      if (!items.length) return;
-      this.sectionHeading(page, label, `${items.length} \u9879`);
-      const compact = page.createDiv({ cls: "mym-goal-compact-list" });
-      items.forEach((goal) => {
-        const row = compact.createEl("button", { cls: "mym-goal-compact" });
-        row.createSpan({ text: goal.title });
-        row.createSpan({ cls: "mym-muted", text: goal.metric || (goal.progress === void 0 ? "\u67E5\u770B" : `${goal.progress}%`) });
-        row.addEventListener("click", () => void this.plugin.openGoal(goal));
+      const list = page.createDiv({ cls: "mym-focus-compact" });
+      focus.forEach((goal) => {
+        const card = list.createEl("button", { cls: "mym-focus-row" });
+        const thumb = card.createDiv({ cls: "mym-focus-thumb" });
+        const image = this.plugin.heroFor(goal.file) || this.plugin.mediaFor(goal.file)[0]?.file;
+        if (image) thumb.style.backgroundImage = `url("${this.app.vault.getResourcePath(image)}")`;
+        else (0, import_obsidian.setIcon)(thumb, this.plugin.iconFor(goal));
+        const copy = card.createDiv({ cls: "mym-focus-copy" });
+        copy.createEl("strong", { text: goal.title });
+        copy.createSpan({ text: goal.metric || goal.recap || "\u7EE7\u7EED\u63A8\u8FDB" });
+        const track = copy.createDiv({ cls: "mym-progress", attr: { role: "progressbar", "aria-valuenow": String(goal.progress ?? 0), "aria-valuemin": "0", "aria-valuemax": "100" } });
+        track.createDiv({ attr: { style: `width:${clamp(goal.progress ?? 0, 0, 100)}%` } });
+        const value = card.createDiv({ cls: "mym-focus-value" });
+        value.createEl("strong", { text: goal.progress === void 0 ? "\u2014" : `${goal.progress}%` });
+        if (goal.due) {
+          const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 864e5);
+          value.createSpan({ text: days >= 0 ? `${days} \u5929` : "\u5DF2\u5230\u671F" });
+        }
+        card.addEventListener("click", () => void this.plugin.openGoal(goal));
       });
-    });
-    this.sectionHeading(page, "\u6700\u8FD1\u53D1\u751F", "Markdown \u65F6\u95F4\u6D41");
-    const recent = this.plugin.dailyFiles().slice(0, 4);
-    const stream = page.createDiv({ cls: "mym-stream" });
-    if (!recent.length) stream.createDiv({ cls: "mym-empty", text: "\u8FD8\u6CA1\u6709\u6700\u8FD1\u8BB0\u5F55\u3002\u70B9\u4E0A\u65B9\u201C\u8BB0\u5F55\u201D\u5199\u4E0B\u7B2C\u4E00\u6761\u3002" });
+    }
+    this.sectionHeading(page, "\u6700\u8FD1\u4EBA\u751F", "\u4F60\u7684\u751F\u6D3B\uFF0C\u4E0D\u662F\u6570\u636E\u8868");
+    const recent = this.plugin.dailyFiles().slice(0, 6);
+    const stream = page.createDiv({ cls: "mym-life-strip" });
+    if (!recent.length) stream.createDiv({ cls: "mym-empty", text: "\u8FD8\u6CA1\u6709\u6700\u8FD1\u8BB0\u5F55\u3002\u70B9\u5E95\u90E8\u201C\u8BB0\u5F55\u201D\u5199\u4E0B\u7B2C\u4E00\u6761\u3002" });
     recent.forEach((file) => {
-      const row = stream.createEl("button", { cls: "mym-stream-row" });
-      row.createSpan({ cls: "mym-stream-date", text: file.basename.slice(5) || dateLabel(file.stat.mtime) });
-      const body = row.createDiv();
-      body.createEl("strong", { text: file.basename });
-      body.createSpan({ text: this.plugin.summary(file) });
-      row.addEventListener("click", () => this.openNote(file));
+      const card = stream.createEl("button", { cls: "mym-life-card" });
+      const visual = card.createDiv({ cls: "mym-life-card-media" });
+      const media = this.plugin.mediaFor(file)[0];
+      if (media?.kind === "image") visual.style.backgroundImage = `url("${this.app.vault.getResourcePath(media.file)}")`;
+      else (0, import_obsidian.setIcon)(visual, "image");
+      card.createEl("strong", { text: this.plugin.dailyTitle(file) });
+      card.createSpan({ text: dateLabel(file.stat.mtime) });
+      card.addEventListener("click", () => this.openNote(file));
     });
   }
   quickButton(parent, icon, label, action) {
@@ -329,43 +342,77 @@ var DetailView = class extends MymView {
       return;
     }
     const statusText = { focus: "\u5F53\u524D\u91CD\u70B9", active: "\u8FDB\u884C\u4E2D", paused: "\u6682\u65F6\u653E\u4E0B", done: "\u5DF2\u7ECF\u5B8C\u6210" };
-    const hero = page.createDiv({ cls: "mym-line-hero" });
+    const isCpa = /cpa|考试|审计|会计/i.test(`${goal.title} ${goal.domain || ""}`);
+    const isFitness = /健身|身体|训练|体脂/i.test(`${goal.title} ${goal.domain || ""}`);
+    const fm = this.plugin.frontmatter(goal.file);
+    const heroFile = this.plugin.heroFor(goal.file) || this.plugin.mediaFor(goal.file).find((item) => item.kind === "image")?.file;
+    const hero = page.createDiv({ cls: `mym-line-hero${heroFile ? " has-image" : ""}` });
+    if (heroFile) hero.style.setProperty("--mym-line-image", `url("${this.app.vault.getResourcePath(heroFile)}")`);
     const meta = hero.createDiv({ cls: "mym-line-meta" });
     meta.createSpan({ text: goal.domain || "\u4EBA\u751F\u4E3B\u7EBF" });
     meta.createSpan({ text: statusText[goal.status] });
     hero.createEl("h1", { text: goal.title });
     hero.createEl("p", { text: goal.recap || "\u8FD9\u4E00\u6BB5\u8FD8\u6CA1\u6709\u5199\u4E0B\u9636\u6BB5\u56DE\u987E\u3002" });
-    const overview = page.createDiv({ cls: "mym-overview-card" });
+    const tabs = page.createDiv({ cls: "mym-detail-tabs", attr: { role: "tablist", "aria-label": `${goal.title} \u9875\u9762\u5BFC\u822A` } });
+    const tabItems = isCpa ? [["\u603B\u89C8", "overview"], ["\u8BA1\u5212", "stage"], ["\u8BB0\u5F55", "records"], ["\u77E5\u8BC6", "knowledge"], ["\u8D44\u6599", "source"]] : [["\u603B\u89C8", "overview"], ["\u8BB0\u5F55", "records"], ["\u6570\u636E", "data"], ["\u77E5\u8BC6", "knowledge"], ["\u8D44\u6E90", "source"]];
+    tabItems.forEach(([label, target], index) => {
+      const button = tabs.createEl("button", { cls: index === 0 ? "is-active" : "", text: label, attr: { role: "tab" } });
+      button.addEventListener("click", () => page.querySelector(`[data-mym-section="${target}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    });
+    const overview = page.createDiv({ cls: `mym-overview-card${isCpa ? " is-cpa" : ""}`, attr: { "data-mym-section": "overview" } });
     const progress = overview.createDiv({ cls: "mym-progress-ring", attr: { style: `--mym-progress:${goal.progress ?? 0}` } });
     const progressText = progress.createDiv();
     progressText.createEl("strong", { text: goal.progress === void 0 ? "\u2014" : `${goal.progress}%` });
     progressText.createSpan({ text: "\u5F53\u524D\u8FDB\u5EA6" });
     const overviewText = overview.createDiv({ cls: "mym-overview-copy" });
-    overviewText.createSpan({ cls: "mym-kicker", text: "\u73B0\u5728\u6700\u91CD\u8981\u7684\u53CD\u9988" });
-    overviewText.createEl("h2", { text: goal.metric || "\u4FDD\u6301\u8282\u594F" });
+    overviewText.createSpan({ cls: "mym-kicker", text: isCpa && goal.due ? "\u8DDD\u79BB\u8003\u8BD5\u8FD8\u6709" : "\u5F53\u524D\u76EE\u6807" });
     if (goal.due) {
       const days = Math.ceil((new Date(goal.due).getTime() - Date.now()) / 864e5);
-      overviewText.createEl("p", { text: days >= 0 ? `\u8DDD\u79BB\u8282\u70B9\u8FD8\u6709 ${days} \u5929` : `\u8FD9\u4E2A\u8282\u70B9\u5DF2\u8FC7\u53BB ${Math.abs(days)} \u5929` });
-    } else overviewText.createEl("p", { text: "\u4E0D\u8FFD\u8D76\u522B\u4EBA\u7684\u65F6\u95F4\uFF0C\u53EA\u770B\u81EA\u5DF1\u7684\u53D8\u5316\u3002" });
-    const stats = page.createDiv({ cls: "mym-stat-grid" });
-    this.stat(stats, "\u8D8B\u52BF", goal.progress === void 0 ? "\u6301\u7EED\u4E2D" : `${goal.progress}%`, "\u6765\u81EA\u76EE\u6807\u5C5E\u6027");
-    const recent = this.plugin.dailyFiles().slice(0, 7);
-    this.stat(stats, "\u6700\u8FD1\u4EBA\u751F", `${recent.length} \u6761`, "\u8FD1\u671F\u5F00\u542F\u7684\u8BB0\u5F55");
+      overviewText.createEl("h2", { text: days >= 0 ? `${days} \u5929` : `\u5DF2\u8FC7 ${Math.abs(days)} \u5929` });
+      overviewText.createEl("p", { text: goal.due });
+    } else {
+      overviewText.createEl("h2", { text: goal.metric || "\u5C1A\u672A\u586B\u5199\u5F53\u524D\u76EE\u6807" });
+      overviewText.createEl("p", { text: goal.progress === void 0 ? "\u7B49\u5F85\u771F\u5B9E\u6570\u636E" : `\u5F53\u524D\u8FDB\u5EA6 ${goal.progress}%` });
+    }
+    const stats = page.createDiv({ cls: "mym-stat-grid", attr: { "data-mym-section": "data" } });
+    if (isFitness) {
+      this.stat(stats, "\u4F53\u91CD", asText(fm.weight, "\u672A\u586B\u5199"), "Property: weight");
+      this.stat(stats, "\u4F53\u8102\u7387", asText(fm.bodyFat, "\u672A\u586B\u5199"), "Property: bodyFat");
+      this.stat(stats, "\u529B\u91CF", asText(fm.strength, "\u672A\u586B\u5199"), "Property: strength");
+    } else if (isCpa) {
+      const subjects = [["\u4F1A\u8BA1", fm.accounting], ["\u5BA1\u8BA1", fm.audit], ["\u8D22\u7BA1", fm.finance], ["\u7A0E\u6CD5", fm.tax]].filter(([, value]) => asText(value));
+      if (subjects.length) subjects.slice(0, 4).forEach(([label, value]) => this.stat(stats, String(label), asText(value), "\u5206\u79D1\u8FDB\u5EA6"));
+      else this.stat(stats, "\u5B66\u4E60\u8FDB\u5EA6", goal.progress === void 0 ? "\u672A\u586B\u5199" : `${goal.progress}%`, "\u5C1A\u672A\u586B\u5199\u5206\u79D1\u8FDB\u5EA6");
+    } else this.stat(stats, "\u5F53\u524D\u8FDB\u5EA6", goal.progress === void 0 ? "\u6301\u7EED\u4E2D" : `${goal.progress}%`, "\u6765\u81EA\u76EE\u6807\u5C5E\u6027");
+    const recent = this.plugin.relatedDaily(goal.file).slice(0, 7);
     const knowledge = this.plugin.relatedKnowledge(goal.file);
-    this.stat(stats, "\u77E5\u8BC6\u8FDE\u63A5", `${knowledge.length} \u4E2A`, "\u4E00\u5230\u4E24\u5C42\u5C40\u90E8\u5173\u7CFB");
+    if (isCpa) {
+      this.heading(page, "\u672C\u5468\u72B6\u6001", "7 \u5929");
+      const week = page.createDiv({ cls: "mym-week-strip" });
+      this.plugin.weekStatus(goal.file).forEach((item) => {
+        const day = week.createDiv({ cls: item.active ? "is-active" : "" });
+        day.createSpan({ text: item.label });
+        day.createDiv();
+      });
+      this.heading(page, "\u5F53\u524D\u9636\u6BB5", "\u8BA1\u5212");
+      const stage = page.createDiv({ cls: "mym-stage-card", attr: { "data-mym-section": "stage" } });
+      stage.createEl("strong", { text: asText(fm.stage, "\u8FD8\u6CA1\u6709\u586B\u5199\u5F53\u524D\u9636\u6BB5") });
+      stage.createSpan({ text: asText(fm.next, goal.metric || "\u5728 Properties \u4E2D\u586B\u5199 stage \u4E0E next") });
+    }
     this.heading(page, "\u9636\u6BB5\u56DE\u987E", "Recap");
     const recap = page.createDiv({ cls: "mym-feature-card" });
     recap.createDiv({ cls: "mym-feature-mark", text: "\u201C" });
     recap.createEl("p", { text: goal.recap || "\u8FD9\u91CC\u8FD8\u6CA1\u6709\u9636\u6BB5\u56DE\u987E\u3002\u7B49\u53D1\u751F\u771F\u5B9E\u53D8\u5316\u65F6\uFF0C\u518D\u5199\u4E0B\u4E00\u53E5\u3002" });
     recap.createSpan({ text: goal.metric || "\u7B49\u5F85\u4E0B\u4E00\u6B21\u771F\u5B9E\u53CD\u9988" });
     const media = this.plugin.mediaFor(goal.file);
-    this.heading(page, "\u53D8\u5316\u5F71\u50CF", media.length ? `${media.length} \u9879` : "\u7167\u7247 / \u89C6\u9891");
+    this.heading(page, isFitness ? "\u53D8\u5316\u5BF9\u6BD4" : "\u53D8\u5316\u5F71\u50CF", media.length ? `${media.length} \u9879` : "\u7167\u7247 / \u89C6\u9891");
     if (media.length) {
       const strip = page.createDiv({ cls: "mym-media-strip" });
       media.slice(0, 5).forEach(({ file, kind }) => {
         const frame = strip.createDiv({ cls: "mym-media-frame" });
         const source = this.app.vault.getResourcePath(file);
         if (kind === "video") frame.createEl("video", { attr: { src: source, controls: "", preload: "metadata", playsinline: "" } });
+        else if (kind === "audio") frame.createEl("audio", { attr: { src: source, controls: "", preload: "none" } });
         else frame.createEl("img", { attr: { src: source, alt: file.basename, decoding: "async" } });
         frame.createSpan({ text: file.basename });
       });
@@ -374,8 +421,8 @@ var DetailView = class extends MymView {
       empty.createSpan({ text: "\u8FD8\u6CA1\u6709\u7167\u7247\u6216\u89C6\u9891\u3002\u628A\u672C\u5730\u5A92\u4F53\u5D4C\u5165\u4E3B\u7EBF\u7B14\u8BB0\u540E\uFF0C\u5B83\u4F1A\u81EA\u7136\u51FA\u73B0\u5728\u8FD9\u91CC\u3002" });
     }
     this.heading(page, "\u6700\u8FD1\u8BB0\u5F55", "\u751F\u6D3B\u7559\u4E0B\u7684\u75D5\u8FF9");
-    const stream = page.createDiv({ cls: "mym-detail-stream" });
-    if (!recent.length) stream.createDiv({ cls: "mym-empty mym-empty-soft", text: "\u8FD9\u91CC\u8FD8\u6CA1\u6709\u5185\u5BB9\u3002\u8BB0\u5F55\u7B2C\u4E00\u6BB5\u751F\u6D3B\u540E\u518D\u56DE\u6765\u770B\u770B\u3002" });
+    const stream = page.createDiv({ cls: "mym-detail-stream", attr: { "data-mym-section": "records" } });
+    if (!recent.length) stream.createDiv({ cls: "mym-empty mym-empty-soft", text: isFitness ? "\u8FD8\u6CA1\u6709\u5065\u8EAB\u8BB0\u5F55\u3002" : isCpa ? "\u8FD8\u6CA1\u6709\u5B66\u4E60\u8BB0\u5F55\u3002" : "\u8FD9\u91CC\u8FD8\u6CA1\u6709\u5185\u5BB9\u3002" });
     recent.slice(0, 4).forEach((file) => {
       const row = stream.createEl("button", { cls: "mym-detail-entry" });
       row.createSpan({ cls: "mym-entry-date", text: dateLabel(file.stat.mtime) });
@@ -386,7 +433,7 @@ var DetailView = class extends MymView {
       row.addEventListener("click", () => this.openNote(file));
     });
     this.heading(page, "\u76F8\u5173\u77E5\u8BC6", knowledge.length ? `${knowledge.length} \u4E2A\u8FDE\u63A5` : "\u5C40\u90E8\u56FE\u8C31");
-    const knowledgeCard = page.createEl("button", { cls: "mym-knowledge-entry" });
+    const knowledgeCard = page.createEl("button", { cls: "mym-knowledge-entry", attr: { "data-mym-section": "knowledge" } });
     const knowledgeIcon = knowledgeCard.createDiv({ cls: "mym-knowledge-icon" });
     (0, import_obsidian.setIcon)(knowledgeIcon, "orbit");
     const knowledgeCopy = knowledgeCard.createDiv();
@@ -394,10 +441,13 @@ var DetailView = class extends MymView {
     knowledgeCopy.createSpan({ text: knowledge.length ? knowledge.slice(0, 3).map((file) => file.basename).join(" \xB7 ") : "\u5728\u7B14\u8BB0\u91CC\u6DFB\u52A0\u53CC\u5411\u94FE\u63A5\u5373\u53EF\u5F00\u59CB" });
     (0, import_obsidian.setIcon)(knowledgeCard.createSpan({ cls: "mym-entry-arrow" }), "arrow-up-right");
     knowledgeCard.addEventListener("click", () => void this.plugin.push(GRAPH_VIEW, { centerPath: goal.file.path }, goal.title));
-    const edit = page.createEl("button", { cls: "mym-edit-source" });
+    const edit = page.createEl("button", { cls: "mym-edit-source", attr: { "data-mym-section": "source" } });
     (0, import_obsidian.setIcon)(edit.createSpan(), "pencil");
     edit.createSpan({ text: "\u7F16\u8F91\u8FD9\u6761\u4E3B\u7EBF\u7684\u6570\u636E" });
     edit.addEventListener("click", () => this.openNote(goal.file));
+    const floating = page.createEl("button", { cls: "mym-floating-add", attr: { "aria-label": "\u5FEB\u901F\u8BB0\u5F55" } });
+    (0, import_obsidian.setIcon)(floating, "plus");
+    floating.addEventListener("click", () => new CaptureModal(this.app).open());
   }
   heading(parent, title, label) {
     const row = parent.createDiv({ cls: "mym-detail-heading" });
@@ -412,6 +462,10 @@ var DetailView = class extends MymView {
   }
 };
 var TimelineView = class extends MymView {
+  constructor() {
+    super(...arguments);
+    this.category = "\u5168\u90E8";
+  }
   getViewType() {
     return TIMELINE_VIEW;
   }
@@ -437,12 +491,24 @@ var TimelineView = class extends MymView {
     const page = this.shell(TIMELINE_VIEW);
     const head = page.createDiv({ cls: "mym-title-row" });
     const words = head.createDiv();
-    words.createEl("h1", { text: "\u4EBA\u751F\u65F6\u95F4\u6D41" });
-    words.createEl("p", { text: "\u4E0D\u7528\u6253\u5361\uFF0C\u53EA\u770B\u771F\u6B63\u7559\u4E0B\u7684\u4E1C\u897F\u3002" });
+    words.createEl("h1", { text: "\u65F6\u95F4" });
+    words.createEl("p", { text: "\u4EBA\u751F\u7ECF\u5386\u3001\u601D\u60F3\u4E0E\u91CC\u7A0B\u7891\uFF0C\u7559\u5728\u4E00\u6761\u7EBF\u4E0A\u3002" });
     const add = head.createEl("button", { cls: "mym-icon-button", attr: { "aria-label": "\u5FEB\u901F\u8BB0\u5F55" } });
     (0, import_obsidian.setIcon)(add, "plus");
     add.addEventListener("click", () => new CaptureModal(this.app).open());
-    const files = this.plugin.dailyFiles();
+    const chips = page.createDiv({ cls: "mym-filter-chips" });
+    ["\u5168\u90E8", "\u7ECF\u5386", "\u601D\u60F3", "\u60C5\u7EEA", "\u91CC\u7A0B\u7891"].forEach((label) => {
+      const chip = chips.createEl("button", { cls: this.category === label ? "is-active" : "", text: label });
+      chip.addEventListener("click", () => {
+        this.category = label;
+        this.renderSafely();
+      });
+    });
+    const files = this.plugin.dailyFiles().filter((file) => {
+      if (this.category === "\u5168\u90E8") return true;
+      const fm = this.plugin.frontmatter(file);
+      return asText(fm.category, asText(fm.kind)).includes(this.category) || ((0, import_obsidian.getAllTags)(this.app.metadataCache.getFileCache(file) || {}) || []).some((tag) => tag.includes(this.category));
+    });
     if (!files.length) {
       page.createDiv({ cls: "mym-empty", text: "\u8FD8\u6CA1\u6709 Daily Note\u3002\u70B9\u53F3\u4E0A\u89D2\u5F00\u59CB\u7B2C\u4E00\u6761\u8BB0\u5F55\u3002" });
       return;
@@ -452,12 +518,18 @@ var TimelineView = class extends MymView {
       const item = timeline.createEl("button", { cls: "mym-time-item" });
       item.createDiv({ cls: "mym-time-dot" });
       const card = item.createDiv({ cls: "mym-time-card" });
-      card.createSpan({ cls: "mym-eyebrow", text: dateLabel(file.stat.mtime) });
-      card.createEl("h2", { text: file.basename });
-      card.createEl("p", { text: this.plugin.summary(file) });
+      const media = this.plugin.mediaFor(file).find((item2) => item2.kind === "image");
+      if (media) {
+        const image = card.createDiv({ cls: "mym-time-media" });
+        image.style.backgroundImage = `url("${this.app.vault.getResourcePath(media.file)}")`;
+      }
+      const body = card.createDiv({ cls: "mym-time-copy" });
+      body.createSpan({ cls: "mym-eyebrow", text: dateLabel(file.stat.mtime) });
+      body.createEl("h2", { text: this.plugin.dailyTitle(file) });
+      body.createEl("p", { text: this.plugin.summary(file) });
       const cache = this.app.metadataCache.getFileCache(file);
       const tags = cache ? (0, import_obsidian.getAllTags)(cache) || [] : [];
-      if (tags.length) card.createSpan({ cls: "mym-tags", text: tags.slice(0, 3).join("  ") });
+      if (tags.length) body.createSpan({ cls: "mym-tags", text: tags.slice(0, 3).join("  ") });
       item.addEventListener("click", () => this.openNote(file));
     });
   }
@@ -531,6 +603,118 @@ var SearchView = class extends MymView {
     await this.app.workspace.revealLeaf(leaf);
   }
 };
+var GoalsView = class extends MymView {
+  constructor() {
+    super(...arguments);
+    this.status = "focus";
+  }
+  getViewType() {
+    return GOALS_VIEW;
+  }
+  getDisplayText() {
+    return "\u76EE\u6807\u7BA1\u7406";
+  }
+  getIcon() {
+    return "list-checks";
+  }
+  onOpen() {
+    this.renderSafely();
+    this.startMobileLifecycle(() => this.renderSafely());
+    return Promise.resolve();
+  }
+  renderSafely() {
+    try {
+      this.render();
+    } catch (error) {
+      this.renderFailure(error, () => this.renderSafely());
+    }
+  }
+  render() {
+    const page = this.detailShell("\u9996\u9875");
+    const title = page.createDiv({ cls: "mym-title-row" });
+    const copy = title.createDiv();
+    copy.createEl("h1", { text: "\u76EE\u6807\u7BA1\u7406" });
+    copy.createEl("p", { text: "\u6240\u6709\u76EE\u6807\uFF0C\u7EDF\u4E00\u7BA1\u7406\u3002\u9996\u9875\u53EA\u4FDD\u7559\u5F53\u524D\u91CD\u70B9\u3002" });
+    const tabs = page.createDiv({ cls: "mym-filter-chips mym-goal-tabs" });
+    const options = [["focus", "\u8FDB\u884C\u4E2D"], ["done", "\u5DF2\u5B8C\u6210"], ["paused", "\u5DF2\u6682\u505C"], ["all", "\u5168\u90E8"]];
+    options.forEach(([value, label]) => {
+      const button = tabs.createEl("button", { cls: this.status === value ? "is-active" : "", text: label });
+      button.addEventListener("click", () => {
+        this.status = value;
+        this.renderSafely();
+      });
+    });
+    const goals = this.plugin.goals().filter((goal) => this.status === "all" || (this.status === "focus" ? ["focus", "active"].includes(goal.status) : goal.status === this.status));
+    const list = page.createDiv({ cls: "mym-manage-list" });
+    if (!goals.length) list.createDiv({ cls: "mym-empty", text: "\u8FD9\u91CC\u8FD8\u6CA1\u6709\u76EE\u6807\u3002\u76EE\u6807\u4ECD\u7136\u4F7F\u7528\u666E\u901A Markdown \u4E0E Properties\u3002" });
+    goals.forEach((goal) => {
+      const row = list.createEl("button", { cls: "mym-manage-row" });
+      const visual = row.createDiv({ cls: "mym-manage-thumb" });
+      const image = this.plugin.heroFor(goal.file) || this.plugin.mediaFor(goal.file).find((item) => item.kind === "image")?.file;
+      if (image) visual.style.backgroundImage = `url("${this.app.vault.getResourcePath(image)}")`;
+      else (0, import_obsidian.setIcon)(visual, this.plugin.iconFor(goal));
+      const body = row.createDiv({ cls: "mym-manage-copy" });
+      body.createEl("strong", { text: goal.title });
+      body.createSpan({ text: goal.metric || goal.recap || "\u8FD8\u6CA1\u6709\u72B6\u6001\u63CF\u8FF0" });
+      const track = body.createDiv({ cls: "mym-progress" });
+      track.createDiv({ attr: { style: `width:${clamp(goal.progress ?? 0, 0, 100)}%` } });
+      const end = row.createDiv({ cls: "mym-manage-end" });
+      end.createEl("strong", { text: goal.progress === void 0 ? "\u2014" : `${goal.progress}%` });
+      end.createSpan({ text: goal.due || (goal.status === "done" ? "\u5DF2\u5B8C\u6210" : goal.status === "paused" ? "\u5DF2\u6682\u505C" : "\u8FDB\u884C\u4E2D") });
+      row.addEventListener("click", () => void this.plugin.openGoal(goal));
+    });
+    const add = page.createEl("button", { cls: "mym-floating-add", attr: { "aria-label": "\u65B0\u5EFA\u76EE\u6807" } });
+    (0, import_obsidian.setIcon)(add, "plus");
+    add.addEventListener("click", () => void this.plugin.createGoal());
+  }
+};
+var ProfileView = class extends MymView {
+  getViewType() {
+    return PROFILE_VIEW;
+  }
+  getDisplayText() {
+    return "\u6211\u7684";
+  }
+  getIcon() {
+    return "user-round";
+  }
+  onOpen() {
+    this.renderSafely();
+    this.startMobileLifecycle(() => this.renderSafely());
+    return Promise.resolve();
+  }
+  renderSafely() {
+    try {
+      this.render();
+    } catch (error) {
+      this.renderFailure(error, () => this.renderSafely());
+    }
+  }
+  render() {
+    const page = this.shell(PROFILE_VIEW);
+    const hero = page.createDiv({ cls: "mym-profile-hero" });
+    hero.createDiv({ cls: "mym-profile-avatar", text: "MYM" });
+    hero.createEl("h1", { text: "\u66F4\u597D\u7684\u81EA\u5DF1" });
+    hero.createEl("p", { text: "\u6301\u7EED\u6210\u957F\uFF0C\u6E29\u67D4\u800C\u575A\u5B9A\u3002" });
+    const menu = page.createDiv({ cls: "mym-settings-list" });
+    this.menu(menu, "list-checks", "\u76EE\u6807\u7BA1\u7406", "\u67E5\u770B\u8FDB\u884C\u4E2D\u3001\u5B8C\u6210\u4E0E\u6682\u505C\u76EE\u6807", () => void this.plugin.push(GOALS_VIEW, {}, "\u6211\u7684"));
+    this.menu(menu, "search", "\u5168\u5C40\u641C\u7D22", "\u67E5\u627E\u76EE\u6807\u3001\u77E5\u8BC6\u3001\u6807\u7B7E\u4E0E\u5C5E\u6027", () => void this.plugin.push(SEARCH_VIEW, {}, "\u6211\u7684"));
+    this.menu(menu, "chart-no-axes-column-increasing", "\u6570\u636E\u7EDF\u8BA1", `${this.plugin.goals().length} \u4E2A\u76EE\u6807 \xB7 ${this.plugin.dailyFiles().length} \u6761\u8BB0\u5F55`, () => new import_obsidian.Notice("\u7EDF\u8BA1\u53EA\u4F7F\u7528 Vault \u672C\u5730\u6570\u636E"));
+    this.menu(menu, "palette", "\u4E3B\u9898\u8BBE\u7F6E", "\u8DDF\u968F MYM \u6DF1\u8272\u8BBE\u8BA1\u7CFB\u7EDF", () => new import_obsidian.Notice("MYM \u5DF2\u4F7F\u7528\u5185\u7F6E\u6DF1\u8272\u4E3B\u9898"));
+    this.menu(menu, "archive-restore", "\u5907\u4EFD\u4E0E\u6062\u590D", "Markdown \u4E0E\u9644\u4EF6\u7531 Vault \u7BA1\u7406", () => new import_obsidian.Notice("\u8BF7\u4F7F\u7528\u4F60\u7684 Obsidian \u540C\u6B65\u6216\u5907\u4EFD\u65B9\u6848"));
+    this.menu(menu, "info", "\u5173\u4E8E MYM Life", "\u7248\u672C 1.2.0 \xB7 \u5B8C\u5168\u79BB\u7EBF", () => new import_obsidian.Notice("MYM Life 1.2.0"));
+  }
+  menu(parent, iconName, title, subtitle, action) {
+    const row = parent.createEl("button", { cls: "mym-settings-row" });
+    const icon = row.createDiv({ cls: "mym-settings-icon" });
+    (0, import_obsidian.setIcon)(icon, iconName);
+    const copy = row.createDiv();
+    copy.createEl("strong", { text: title });
+    copy.createSpan({ text: subtitle });
+    (0, import_obsidian.setIcon)(row.createSpan({ cls: "mym-entry-arrow" }), "chevron-right");
+    row.addEventListener("click", action);
+  }
+};
 var GraphView = class extends MymView {
   constructor() {
     super(...arguments);
@@ -540,8 +724,10 @@ var GraphView = class extends MymView {
     this.scale = 1;
     this.panX = 0;
     this.panY = 0;
+    this.dragNode = -1;
     this.centerPath = "";
-    this.nodeLimit = 36;
+    this.domainFilter = "\u5168\u90E8";
+    this.nodeLimit = 30;
   }
   getViewType() {
     return GRAPH_VIEW;
@@ -600,7 +786,7 @@ var GraphView = class extends MymView {
     const more = controls.createEl("button", { attr: { "aria-label": "\u52A0\u8F7D\u66F4\u591A\u8282\u70B9" } });
     (0, import_obsidian.setIcon)(more, "plus");
     more.addEventListener("click", () => {
-      this.nodeLimit = Math.min(72, this.nodeLimit + 18);
+      this.nodeLimit = Math.min(80, this.nodeLimit + 20);
       this.build();
       this.updatePreview?.();
     });
@@ -612,12 +798,26 @@ var GraphView = class extends MymView {
       this.panY = 0;
       this.draw();
     });
+    const filters = wrap.createDiv({ cls: "mym-graph-filters" });
+    ["\u5168\u90E8", "\u5065\u8EAB", "CPA", "\u82F1\u8BED", "\u5DE5\u4F5C", "\u751F\u6D3B"].forEach((domain) => {
+      const chip = filters.createEl("button", { cls: this.domainFilter === domain ? "is-active" : "", text: domain });
+      chip.addEventListener("click", () => {
+        this.domainFilter = domain;
+        this.centerPath = "";
+        this.nodeLimit = 30;
+        filters.querySelectorAll("button").forEach((button) => button.toggleClass("is-active", button === chip));
+        this.build();
+        this.updatePreview?.();
+      });
+    });
     this.canvas = wrap.createEl("canvas", { cls: "mym-graph-canvas", attr: { "aria-label": "\u53EF\u7F29\u653E\u77E5\u8BC6\u56FE\u8C31" } });
     this.ctx = this.canvas.getContext("2d") || void 0;
     const preview = wrap.createDiv({ cls: "mym-graph-preview" });
     const label = preview.createDiv({ cls: "mym-graph-preview-label", text: "\u5F53\u524D\u8282\u70B9" });
     const title = preview.createEl("h2");
     const summary = preview.createEl("p");
+    const previewMeta = preview.createDiv({ cls: "mym-graph-preview-meta" });
+    const previewTags = preview.createDiv({ cls: "mym-graph-preview-tags" });
     const open = preview.createEl("button", { text: "\u6253\u5F00\u7B14\u8BB0" });
     open.addEventListener("click", () => {
       const node = this.nodes[this.selected];
@@ -633,26 +833,38 @@ var GraphView = class extends MymView {
       label.setText(node.level === 0 ? "\u4E2D\u5FC3\u8282\u70B9" : node.domain || "\u5173\u8054\u77E5\u8BC6");
       title.setText(node.file.basename);
       summary.setText(this.plugin.summary(node.file));
+      const relations = this.edges.filter((edge) => edge.from === this.selected || edge.to === this.selected).length;
+      previewMeta.setText(`${relations} \u4E2A\u5173\u8054 \xB7 ${node.level === 0 ? "\u5F53\u524D\u805A\u7126" : `${node.level} \u5C42\u5173\u7CFB`}`);
+      previewTags.empty();
+      const cache = this.app.metadataCache.getFileCache(node.file);
+      const tags = cache ? (0, import_obsidian.getAllTags)(cache) || [] : [];
+      (tags.length ? tags : [node.domain]).slice(0, 4).forEach((tag) => previewTags.createSpan({ text: tag }));
     };
     this.updatePreview = updatePreview;
     this.canvas.addEventListener("pointerdown", (event) => {
       this.canvas?.setPointerCapture(event.pointerId);
       this.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+      this.dragNode = this.hitTest(event.clientX, event.clientY);
     });
     this.canvas.addEventListener("pointermove", (event) => {
       if (!this.pointer || this.pointer.id !== event.pointerId) return;
       const dx = event.clientX - this.pointer.x;
       const dy = event.clientY - this.pointer.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) this.pointer.moved = true;
-      this.panX += dx;
-      this.panY += dy;
+      if (this.dragNode >= 0 && this.nodes[this.dragNode]) {
+        this.nodes[this.dragNode].x += dx / this.scale;
+        this.nodes[this.dragNode].y += dy / this.scale;
+      } else {
+        this.panX += dx;
+        this.panY += dy;
+      }
       this.pointer.x = event.clientX;
       this.pointer.y = event.clientY;
       this.draw();
     });
     this.canvas.addEventListener("pointerup", (event) => {
       if (!this.pointer) return;
-      if (!this.pointer.moved) {
+      if (!this.pointer.moved || this.dragNode >= 0) {
         const index = this.hitTest(event.clientX, event.clientY);
         if (index >= 0) {
           this.selected = index;
@@ -661,6 +873,7 @@ var GraphView = class extends MymView {
         }
       }
       this.pointer = void 0;
+      this.dragNode = -1;
     });
     this.canvas.addEventListener("wheel", (event) => {
       event.preventDefault();
@@ -696,9 +909,9 @@ var GraphView = class extends MymView {
   }
   build() {
     const active = this.app.workspace.getActiveFile();
-    const knowledge = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith("03 Knowledge/"));
+    const knowledge = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith("03 Knowledge/") && this.matchesDomain(file));
     const requested = this.centerPath ? this.app.vault.getAbstractFileByPath(this.centerPath) : void 0;
-    this.center = requested instanceof import_obsidian.TFile ? requested : active && active.extension === "md" ? active : knowledge[0] || this.app.vault.getMarkdownFiles()[0];
+    this.center = requested instanceof import_obsidian.TFile ? requested : knowledge[0] || (active && active.extension === "md" ? active : this.app.vault.getMarkdownFiles()[0]);
     if (!this.center) {
       this.nodes = [];
       this.edges = [];
@@ -744,6 +957,14 @@ var GraphView = class extends MymView {
     this.edges = edges;
     this.selected = 0;
     this.resizeCanvas();
+  }
+  matchesDomain(file) {
+    if (this.domainFilter === "\u5168\u90E8") return true;
+    const fm = this.plugin.frontmatter(file);
+    const haystack = `${file.path} ${asText(fm.domain)} ${asText(fm.tags)}`.toLocaleLowerCase();
+    if (this.domainFilter === "\u5065\u8EAB") return /健身|身体|训练/.test(haystack);
+    if (this.domainFilter === "CPA") return /cpa|会计|审计|财管|税法/.test(haystack);
+    return haystack.includes(this.domainFilter.toLocaleLowerCase());
   }
   neighbors(file, reverse) {
     const cache = this.app.metadataCache.getFileCache(file);
@@ -854,12 +1075,49 @@ var CaptureModal = class extends import_obsidian.Modal {
   constructor() {
     super(...arguments);
     this.moods = /* @__PURE__ */ new Set();
+    this.category = "\u65E5\u8BB0";
+    this.pendingFiles = [];
   }
   onOpen() {
     this.modalEl.addClass("mym-capture-modal");
-    this.titleEl.setText("\u8BB0\u4E00\u4E0B");
-    const input = this.contentEl.createEl("textarea", { placeholder: "\u6B64\u523B\u53D1\u751F\u4E86\u4EC0\u4E48\uFF1F", attr: { rows: "6", enterkeyhint: "done" } });
-    this.contentEl.createDiv({ cls: "mym-field-label", text: "\u60C5\u7EEA\uFF08\u53EF\u591A\u9009\uFF0C\u4E5F\u53EF\u4EE5\u4E0D\u9009\uFF09" });
+    this.titleEl.setText("\u65B0\u5EFA\u8BB0\u5F55");
+    const categories = this.contentEl.createDiv({ cls: "mym-capture-categories" });
+    ["\u65E5\u8BB0", "\u7075\u611F", "\u60F3\u6CD5", "\u60C5\u7EEA", "\u5F85\u529E"].forEach((category) => {
+      const button = categories.createEl("button", { cls: category === this.category ? "is-active" : "", text: category });
+      button.addEventListener("click", () => {
+        this.category = category;
+        categories.querySelectorAll("button").forEach((item) => item.toggleClass("is-active", item === button));
+      });
+    });
+    const input = this.contentEl.createEl("textarea", { placeholder: "\u6B64\u523B\u7684\u60F3\u6CD5\u2026", attr: { rows: "7", enterkeyhint: "done" } });
+    const tools = this.contentEl.createDiv({ cls: "mym-capture-tools" });
+    const fileInput = tools.createEl("input", { type: "file", attr: { multiple: "", accept: "image/*,video/*,audio/*" } });
+    fileInput.hidden = true;
+    const addMedia = (iconName, label, accept) => {
+      const button = tools.createEl("button", { attr: { "aria-label": label, title: label } });
+      (0, import_obsidian.setIcon)(button, iconName);
+      button.addEventListener("click", () => {
+        fileInput.accept = accept;
+        fileInput.click();
+      });
+    };
+    addMedia("image", "\u6DFB\u52A0\u56FE\u7247", "image/*");
+    addMedia("video", "\u6DFB\u52A0\u89C6\u9891", "video/*");
+    addMedia("mic", "\u6DFB\u52A0\u97F3\u9891", "audio/*");
+    const link = tools.createEl("button", { attr: { "aria-label": "\u6DFB\u52A0\u94FE\u63A5", title: "\u6DFB\u52A0\u94FE\u63A5" } });
+    (0, import_obsidian.setIcon)(link, "link");
+    const linkInput = this.contentEl.createEl("input", { type: "url", cls: "mym-capture-link", placeholder: "\u7C98\u8D34\u94FE\u63A5\uFF08\u53EF\u9009\uFF09" });
+    linkInput.hidden = true;
+    link.addEventListener("click", () => {
+      linkInput.hidden = !linkInput.hidden;
+      if (!linkInput.hidden) linkInput.focus();
+    });
+    const attachmentState = tools.createSpan({ cls: "mym-attachment-state" });
+    fileInput.addEventListener("change", () => {
+      this.pendingFiles = Array.from(fileInput.files || []);
+      attachmentState.setText(this.pendingFiles.length ? `${this.pendingFiles.length} \u4E2A\u9644\u4EF6` : "");
+    });
+    this.contentEl.createDiv({ cls: "mym-field-label", text: "\u60C5\u7EEA" });
     const moodRow = this.contentEl.createDiv({ cls: "mym-moods" });
     ["\u5F00\u5FC3", "\u5E73\u9759", "\u7126\u8651", "\u4F4E\u843D", "\u6124\u6012", "\u75B2\u60EB", "\u671F\u5F85"].forEach((mood) => {
       const button = moodRow.createEl("button", { text: mood });
@@ -887,13 +1145,31 @@ var CaptureModal = class extends import_obsidian.Modal {
       const stamp = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(/* @__PURE__ */ new Date());
       const moodText = this.moods.size ? `
 \u60C5\u7EEA\uFF1A${Array.from(this.moods).map((item) => `#\u60C5\u7EEA/${item}`).join(" ")}` : "";
-      const block = `
-
-## ${stamp}
-
-${text}${moodText}
-`;
       try {
+        const attachmentLinks = [];
+        if (this.pendingFiles.length) {
+          const attachmentFolder = "Attachments";
+          if (!this.app.vault.getAbstractFileByPath(attachmentFolder)) await this.app.vault.createFolder(attachmentFolder);
+          for (const pending of this.pendingFiles.slice(0, 5)) {
+            const safeName = pending.name.replace(/[\\/:*?"<>|]/g, "-");
+            let mediaPath = `${attachmentFolder}/${safeName}`;
+            if (this.app.vault.getAbstractFileByPath(mediaPath)) mediaPath = `${attachmentFolder}/${Date.now()}-${safeName}`;
+            await this.app.vault.createBinary(mediaPath, await pending.arrayBuffer());
+            attachmentLinks.push(`![[${mediaPath}]]`);
+          }
+        }
+        const linkText = linkInput.value.trim() ? `
+\u94FE\u63A5\uFF1A${linkInput.value.trim()}` : "";
+        const attachmentText = attachmentLinks.length ? `
+
+${attachmentLinks.join("\n")}` : "";
+        const block = `
+
+## ${stamp} \xB7 ${this.category}
+
+${text}
+#\u7C7B\u578B/${this.category}${moodText}${linkText}${attachmentText}
+`;
         if (existing instanceof import_obsidian.TFile) await this.app.vault.process(existing, (content) => content + block);
         else {
           if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
@@ -928,6 +1204,8 @@ var MymLifePlugin = class extends import_obsidian.Plugin {
     this.registerView(TIMELINE_VIEW, (leaf) => new TimelineView(leaf, this));
     this.registerView(GRAPH_VIEW, (leaf) => new GraphView(leaf, this));
     this.registerView(SEARCH_VIEW, (leaf) => new SearchView(leaf, this));
+    this.registerView(GOALS_VIEW, (leaf) => new GoalsView(leaf, this));
+    this.registerView(PROFILE_VIEW, (leaf) => new ProfileView(leaf, this));
     this.addRibbonIcon("sprout", "\u6253\u5F00 MYM \u4EBA\u751F\u9996\u9875", () => void this.openRoot(HOME_VIEW));
     this.addCommand({ id: "open-life-home", name: "\u6253\u5F00\u4EBA\u751F\u9996\u9875", callback: () => void this.openRoot(HOME_VIEW) });
     this.addCommand({ id: "quick-capture", name: "\u5FEB\u901F\u8BB0\u5F55\u5230\u4ECA\u5929", callback: () => new CaptureModal(this.app).open() });
@@ -1001,6 +1279,26 @@ date: ${localDate()}
   frontmatter(file) {
     return this.app.metadataCache.getFileCache(file)?.frontmatter || {};
   }
+  fileByType(type) {
+    return this.app.vault.getMarkdownFiles().find((file) => asText(this.frontmatter(file).type) === type);
+  }
+  heroFor(file) {
+    const fm = this.frontmatter(file);
+    const raw = asText(fm.hero) || asText(fm.cover) || asText(fm.image);
+    if (!raw) return void 0;
+    const link = raw.replace(/^!?\[\[/, "").replace(/\]\]$/, "").split("|")[0];
+    const target = this.app.metadataCache.getFirstLinkpathDest(link, file.path);
+    return target instanceof import_obsidian.TFile && ["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(target.extension.toLowerCase()) ? target : void 0;
+  }
+  iconFor(goal) {
+    const value = `${goal.title} ${goal.domain || ""}`.toLocaleLowerCase();
+    if (/健身|身体|训练/.test(value)) return "dumbbell";
+    if (/cpa|学习|考试/.test(value)) return "graduation-cap";
+    if (/表达|英语|语言/.test(value)) return "messages-square";
+    if (/工作|研究/.test(value)) return "briefcase-business";
+    if (/旅行|生活/.test(value)) return "compass";
+    return "target";
+  }
   goals() {
     return this.app.vault.getMarkdownFiles().filter((file) => !file.path.startsWith("Templates/") && asText(this.frontmatter(file).type) === "goal").map((file) => {
       const fm = this.frontmatter(file);
@@ -1043,17 +1341,56 @@ date: ${localDate()}
   mediaFor(file) {
     const image = /* @__PURE__ */ new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"]);
     const video = /* @__PURE__ */ new Set(["mp4", "mov", "m4v", "webm"]);
+    const audio = /* @__PURE__ */ new Set(["m4a", "mp3", "wav", "aac", "ogg"]);
     const cache = this.app.metadataCache.getFileCache(file);
     const media = [];
     (cache?.embeds || []).map((embed) => this.app.metadataCache.getFirstLinkpathDest(embed.link, file.path)).filter((target) => target instanceof import_obsidian.TFile).forEach((target) => {
       const extension = target.extension.toLowerCase();
       if (image.has(extension)) media.push({ file: target, kind: "image" });
       else if (video.has(extension)) media.push({ file: target, kind: "video" });
+      else if (audio.has(extension)) media.push({ file: target, kind: "audio" });
     });
     return media;
   }
   dailyFiles() {
     return this.app.vault.getMarkdownFiles().filter((file) => !file.path.startsWith("Templates/") && (file.path.startsWith("02 Daily/") || asText(this.frontmatter(file).type) === "daily")).sort((a, b) => b.basename.localeCompare(a.basename) || b.stat.mtime - a.stat.mtime);
+  }
+  dailyTitle(file) {
+    const title = asText(this.frontmatter(file).title);
+    if (title) return title;
+    const summary = this.summary(file);
+    return summary === file.path ? file.basename : summary.length > 16 ? `${summary.slice(0, 16)}\u2026` : summary;
+  }
+  relatedDaily(goal) {
+    return this.dailyFiles().filter((file) => Boolean(this.app.metadataCache.resolvedLinks[file.path]?.[goal.path]));
+  }
+  weekStatus(goal) {
+    const linked = new Set(this.relatedDaily(goal).map((file) => file.basename));
+    const formatter = new Intl.DateTimeFormat("zh-CN", { weekday: "narrow" });
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = /* @__PURE__ */ new Date();
+      date.setHours(0, 0, 0, 0);
+      date.setDate(date.getDate() - (6 - index));
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      return { label: formatter.format(date), active: linked.has(key) };
+    });
+  }
+  async createGoal() {
+    const folder = "04 Goals";
+    if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+    const stamp = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(/* @__PURE__ */ new Date()).replace(/\D/g, "");
+    const path = `${folder}/\u65B0\u76EE\u6807-${stamp}.md`;
+    const file = await this.app.vault.create(path, `---
+type: goal
+title: \u65B0\u76EE\u6807
+status: active
+progress: 0
+---
+# \u65B0\u76EE\u6807
+
+\u5199\u4E0B\u771F\u6B63\u60F3\u63A8\u8FDB\u7684\u53D8\u5316\u3002
+`);
+    await this.app.workspace.getLeaf("tab").openFile(file);
   }
   summary(file) {
     const fm = this.frontmatter(file);
